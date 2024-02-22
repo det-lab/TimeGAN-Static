@@ -1,15 +1,15 @@
 # TimeGAN
 
-[![Release](https://img.shields.io/github/v/release/zkromerUCD/TimeGAN)](https://img.shields.io/github/v/release/zkromerUCD/TimeGAN)
-[![Build status](https://img.shields.io/github/actions/workflow/status/zkromerUCD/TimeGAN/main.yml?branch=main)](https://github.com/zkromerUCD/TimeGAN/actions/workflows/main.yml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/zkromerUCD/TimeGAN/branch/main/graph/badge.svg)](https://codecov.io/gh/zkromerUCD/TimeGAN)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/zkromerUCD/TimeGAN)](https://img.shields.io/github/commit-activity/m/zkromerUCD/TimeGAN)
-[![License](https://img.shields.io/github/license/zkromerUCD/TimeGAN)](https://img.shields.io/github/license/zkromerUCD/TimeGAN)
+[![Release](https://img.shields.io/github/v/release/det-lab/TimeGAN)](https://img.shields.io/github/v/release/zkromerUCD/TimeGAN)
+[![Build status](https://img.shields.io/github/actions/workflow/status/det-lab/TimeGAN/main.yml?branch=main)](https://github.com/zkromerUCD/TimeGAN/actions/workflows/main.yml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/det-lab/TimeGAN/branch/main/graph/badge.svg)](https://codecov.io/gh/zkromerUCD/TimeGAN)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/det-lab/TimeGAN)](https://img.shields.io/github/commit-activity/m/zkromerUCD/TimeGAN)
+[![License](https://img.shields.io/github/license/det-lab/TimeGAN)](https://img.shields.io/github/license/zkromerUCD/TimeGAN)
 
 A fork of https://github.com/jsyoon0823/TimeGAN that implements static features and snapshotting
 
-- **Github repository**: <https://github.com/zkromerUCD/TimeGAN/>
-- **Documentation** <https://zkromerUCD.github.io/TimeGAN/>
+- **Github repository**: <https://github.com/det-lab/TimeGAN/>
+- **Documentation** <https://det-lab.github.io/TimeGAN/>
 
 ## Getting started with your project
 
@@ -19,7 +19,7 @@ First, create a repository on GitHub with the same name as this project, and the
 git init -b main
 git add .
 git commit -m "init commit"
-git remote add origin git@github.com:zkromerUCD/TimeGAN.git
+git remote add origin git@github.com:det-lab/TimeGAN.git
 git push -u origin main
 ```
 
@@ -39,8 +39,8 @@ To enable the code coverage reports, see [here](https://fpgmaas.github.io/cookie
 ## Releasing a new version
 
 - Create an API Token on [Pypi](https://pypi.org/).
-- Add the API Token to your projects secrets with the name `PYPI_TOKEN` by visiting [this page](https://github.com/zkromerUCD/TimeGAN/settings/secrets/actions/new).
-- Create a [new release](https://github.com/zkromerUCD/TimeGAN/releases/new) on Github.
+- Add the API Token to your projects secrets with the name `PYPI_TOKEN` by visiting [this page](https://github.com/det-lab/TimeGAN/settings/secrets/actions/new).
+- Create a [new release](https://github.com/det-lab/TimeGAN/releases/new) on Github.
 - Create a new tag in the form `*.*.*`.
 
 For more details, see [here](https://fpgmaas.github.io/cookiecutter-poetry/features/cicd/#how-to-trigger-a-release).
