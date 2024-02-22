@@ -1,15 +1,15 @@
 # TimeGAN
 
-[![Release](https://img.shields.io/github/v/release/det-lab/TimeGAN)](https://img.shields.io/github/v/release/zkromerUCD/TimeGAN)
-[![Build status](https://img.shields.io/github/actions/workflow/status/det-lab/TimeGAN/main.yml?branch=main)](https://github.com/zkromerUCD/TimeGAN/actions/workflows/main.yml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/det-lab/TimeGAN/branch/main/graph/badge.svg)](https://codecov.io/gh/zkromerUCD/TimeGAN)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/det-lab/TimeGAN)](https://img.shields.io/github/commit-activity/m/zkromerUCD/TimeGAN)
-[![License](https://img.shields.io/github/license/det-lab/TimeGAN)](https://img.shields.io/github/license/zkromerUCD/TimeGAN)
+[![Release](https://img.shields.io/github/v/release/det-lab/TimeGAN-Static)](https://img.shields.io/github/v/release/det-lab/TimeGAN-Static)
+[![Build status](https://img.shields.io/github/actions/workflow/status/det-lab/TimeGAN-Static/main.yml?branch=main)](https://github.com/det-lab/TimeGAN-Static/actions/workflows/main.yml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/det-lab/TimeGAN-Static/branch/main/graph/badge.svg)](https://codecov.io/gh/det-lab/TimeGAN-Static)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/det-lab/TimeGAN-Static)](https://img.shields.io/github/commit-activity/m/det-lab/TimeGAN-Static)
+[![License](https://img.shields.io/github/license/det-lab/TimeGAN-Static)](https://img.shields.io/github/license/det-lab/TimeGAN-Static)
 
 A fork of https://github.com/jsyoon0823/TimeGAN that implements static features and snapshotting
 
-- **Github repository**: <https://github.com/det-lab/TimeGAN/>
-- **Documentation** <https://det-lab.github.io/TimeGAN/>
+- **Github repository**: <https://github.com/det-lab/TimeGAN-Static/>
+- **Documentation** <https://det-lab.github.io/TimeGAN-Static/>
 
 ## Getting started with your project
 
@@ -39,8 +39,8 @@ To enable the code coverage reports, see [here](https://fpgmaas.github.io/cookie
 ## Releasing a new version
 
 - Create an API Token on [Pypi](https://pypi.org/).
-- Add the API Token to your projects secrets with the name `PYPI_TOKEN` by visiting [this page](https://github.com/det-lab/TimeGAN/settings/secrets/actions/new).
-- Create a [new release](https://github.com/det-lab/TimeGAN/releases/new) on Github.
+- Add the API Token to your projects secrets with the name `PYPI_TOKEN` by visiting [this page](https://github.com/det-lab/TimeGAN-Static/settings/secrets/actions/new).
+- Create a [new release](https://github.com/det-lab/TimeGAN-Static/releases/new) on Github.
 - Create a new tag in the form `*.*.*`.
 
 For more details, see [here](https://fpgmaas.github.io/cookiecutter-poetry/features/cicd/#how-to-trigger-a-release).
