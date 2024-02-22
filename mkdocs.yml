@@ -1,10 +1,10 @@
 site_name: TimeGAN
-repo_url: https://github.com/zkromerUCD/TimeGAN
-site_url: https://zkromerUCD.github.io/TimeGAN
+repo_url: https://github.com/det-lab/TimeGAN-Static
+site_url: https://det-lab.github.io/TimeGAN-Static
 site_description: A fork of https://github.com/jsyoon0823/TimeGAN that implements static features and snapshotting
 site_author: Zack Kromer
 edit_uri: edit/main/docs/
-repo_name: zkromerUCD/TimeGAN
+repo_name: det-lab/TimeGAN-Static
 copyright: Maintained by <a href="https://zkromerUCD.com">Florian</a>.
 
 nav:
@@ -43,7 +43,7 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/zkromerUCD/TimeGAN
+      link: https://github.com/det-lab/TimeGAN-Static
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/TimeGAN
 
