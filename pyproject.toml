@@ -12,7 +12,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.9,<3.12"
-tensorflow = "*" 
+tensorflow = "*"
 numpy = "*"
 utils = "*"
 tqdm = "^4.66.2"
@@ -92,6 +92,12 @@ ignore = [
     "E501",
     # DoNotAssignLambda
     "E731",
+    # VariableAssignedButNotUsed
+    "F841",
+    # LoopControlVarNotUsed
+    "B007",
+    # UnnecessaryListCall
+    "C408",
 ]
 
 [tool.ruff.format]
