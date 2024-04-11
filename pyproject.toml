@@ -11,15 +11,15 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.8,<3.12"
+python = ">=3.9,<3.12"
 tensorflow = "*" 
 numpy = "*"
 utils = "*"
 tqdm = "^4.66.2"
 argparse = "^1.4.0"
 pandas = "^2.2.2"
-scikit-learn = "^1.4.2"
-matplotlib = "^3.8.4"
+scikit-learn = "^0.21.3"
+matplotlib = "^3.1.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.2.0"
