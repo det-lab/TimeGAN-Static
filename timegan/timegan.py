@@ -20,8 +20,7 @@ Note: Use original data as training set to generater synthetic data (time-series
 import numpy as np
 import tensorflow as tf
 from tf_slim.layers import layers as _layers
-
-from timegan.utils import batch_generator, extract_time, random_generator, rnn_cell
+from utils import batch_generator, extract_time, random_generator, rnn_cell
 
 
 # Min Max Scaler

@@ -99,6 +99,8 @@ ignore = [
     "B007",
     # UnnecessaryListCall
     "C408",
+    # UnnecessaryGeneratorRewriteAsListComprehension
+    "C400",
 ]
 
 [tool.ruff.format]
