@@ -12,7 +12,8 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.9,<3.12"
-tensorflow = "*"
+tensorflow = "2.11.0"
+tensorflow-io-gcs-filesystem = "0.31.0"
 numpy = "*"
 utils = "*"
 tqdm = "^4.66.2"
