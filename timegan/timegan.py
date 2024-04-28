@@ -20,10 +20,11 @@ Note: Use original data as training set to generater synthetic data (time-series
 import numpy as np
 import tensorflow as tf
 from tf_slim.layers import layers as _layers
-from tensorflow.keras.layers import StackedRNNCells, LSTMCell
+
 from timegan.utils import batch_generator, extract_time, random_generator, rnn_cell
 
 tf.compat.v1.disable_eager_execution()
+tf.compat.v1.disable_v2_behavior()
 
 
 # Min Max Scaler
@@ -71,7 +72,7 @@ def embedder(X, T, param):
 
     Returns:
       - H: embeddings
-      
+
     Update:
         Attempting to update tensorflow v1.x code to v2.x
         Currently able to do so with e_outputs, but may lose e_last_states along the way
@@ -79,25 +80,27 @@ def embedder(X, T, param):
     hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
     dim = z_dim
     with tf.compat.v1.variable_scope("embedder", reuse=tf.compat.v1.AUTO_REUSE):
-        
-        print("e_cell")  # TEMP
-        e_cell = StackedRNNCells([LSTMCell(hidden_dim) for _ in range(num_layers)])
-        # e_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
-       
-        print("e_output")  # TEMP
-        
+        # e_cell = StackedRNNCells([LSTMCell(hidden_dim) for _ in range(num_layers)])
+        e_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
+
+        # print("E cell: " , e_cell, "\nX: ", X)
+
         # rnn_layer = tf.keras.layers.RNN(e_cell, return_state=True)
+
         # e_outputs, e_last_states = rnn_layer(X)
-       
-        e_outputs = tf.keras.layers.RNN(e_cell)(X)
-        e_last_states = X
+
+        # e_outputs = tf.keras.layers.RNN(e_cell)(X)
+        # e_last_states = X
+
+        # print("e out: " , e_outputs, "\n X ", e_last_states)
+
         # e_outputs, e_last_states = tf.keras.layers.RNN(e_cell, return_sequences=True, return_state=True)(X)
-        # e_outputs, e_last_states = tf.compat.v1.nn.dynamic_rnn(e_cell, X, dtype=tf.float32, sequence_length=T)
-       
-        print("H")  # TEMP
-        H = tf.keras.layers.Dense(hidden_dim, activation=tf.nn.sigmoid)(e_outputs)
-        # H = _layers.fully_connected(e_outputs, hidden_dim, activation_fn=tf.nn.sigmoid)
-    return H
+        e_outputs, e_last_states = tf.compat.v1.nn.dynamic_rnn(e_cell, X, dtype=tf.float32, sequence_length=T)
+
+        # H = tf.keras.layers.Dense(hidden_dim, activation=tf.nn.sigmoid)(e_outputs)
+        H = _layers.fully_connected(e_outputs, hidden_dim, activation_fn=tf.nn.sigmoid)
+        print("H: ", H)
+        return H
 
 
 '''
@@ -140,25 +143,29 @@ def recovery(H, T, param):
     Returns:
       - X_tilde: recovered data
     """
-    
+
     hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
     dim = z_dim
+
+    # print("H shape: ", X.shape)
     with tf.compat.v1.variable_scope("recovery", reuse=tf.compat.v1.AUTO_REUSE):
-       r_cell = StackedRNNCells([LSTMCell(hidden_dim) for _ in range(num_layers)])
-       #
-       r_outputs = tf.keras.layers.RNN(r_cell)(H)
-       X_tilde = tf.keras.layers.Dense(dim, activation=tf.nn.sigmoid)(r_outputs)
-  
+        # r_cell = StackedRNNCells([LSTMCell(hidden_dim) for _ in range(num_layers)])
+        # print("hidden_dim: ", hidden_dim, "num_layers: ", num_layers)
+        # print("R cell: ", r_cell)
+        # print("H shape: ", X.shape)
+        # r_outputs = tf.keras.layers.RNN(r_cell)(H)
+        # X_tilde = tf.keras.layers.Dense(dim, activation=tf.nn.sigmoid)(r_outputs)
+        r_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
+        r_outputs, r_last_states = tf.compat.v1.nn.dynamic_rnn(r_cell, H, dtype=tf.float32, sequence_length=T)
+        X_tilde = _layers.fully_connected(r_outputs, dim, activation_fn=tf.nn.sigmoid)
+
     return X_tilde
 
     # hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
     # dim = z_dim
     # with tf.compat.v1.variable_scope("recovery", reuse=tf.compat.v1.AUTO_REUSE):
-        
-    #     r_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
-    #     r_outputs, r_last_states = tf.compat.v1.nn.dynamic_rnn(r_cell, H, dtype=tf.float32, sequence_length=T)
-    #     X_tilde = _layers.fully_connected(r_outputs, dim, activation_fn=tf.nn.sigmoid)
-   
+
+    #
     # return X_tilde
 
 
