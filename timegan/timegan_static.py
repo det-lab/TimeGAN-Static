@@ -22,6 +22,9 @@ import numpy as np
 from utils import extract_time, rnn_cell, random_generator, batch_generator
 from tf_slim.layers import layers as _layers
 
+tf.compat.v1.disable_eager_execution()
+tf.compat.v1.disable_v2_behavior()
+
 # Min Max Scaler
 def MinMaxScaler(data):
     """Min-Max Normalizer.
