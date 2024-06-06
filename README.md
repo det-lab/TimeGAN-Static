@@ -8,29 +8,18 @@
 
 A fork of https://github.com/jsyoon0823/TimeGAN that implements static features and snapshotting
 
-- **Github repository**: <https://github.com/det-lab/TimeGAN-Static/>
+- **Original Github repository**: <https://github.com/det-lab/TimeGAN-Static/>
 - **Documentation** <https://det-lab.github.io/TimeGAN-Static/>
 
-## Getting started with your project
+## Installing this software
 
-First, create a repository on GitHub with the same name as this project, and then run the following commands:
-
-```bash
-git init -b main
-git add .
-git commit -m "init commit"
-git remote add origin git@github.com:det-lab/TimeGAN.git
-git push -u origin main
-```
-
-Finally, install the environment and the pre-commit hooks with
+You can install this software into a Python 3.9 - 3.10 environment with 
 
 ```bash
-make install
+pip install timegan
 ```
 
-You are now ready to start development on your project!
-The CI/CD pipeline will be triggered when you open a pull request, merge to main, or when you create a new release.
+## Developing this code
 
 To finalize the set-up for publishing to PyPi or Artifactory, see [here](https://fpgmaas.github.io/cookiecutter-poetry/features/publishing/#set-up-for-pypi).
 For activating the automatic documentation with MkDocs, see [here](https://fpgmaas.github.io/cookiecutter-poetry/features/mkdocs/#enabling-the-documentation-on-github).
