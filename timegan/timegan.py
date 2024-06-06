@@ -22,6 +22,8 @@ import numpy as np
 import tensorflow as tf
 from tf_slim.layers import layers as _layers
 
+from time import time_ns
+
 from timegan.utils import batch_generator, extract_time, random_generator, rnn_cell
 
 tf.compat.v1.disable_eager_execution()

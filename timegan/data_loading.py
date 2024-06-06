@@ -91,7 +91,7 @@ def real_data_loading(data_name, seq_len):
     assert data_name in ["stock", "energy"]
 
     if data_name == "stock":
-        ori_data = np.loadtxt("timegan/data/stock_data.csv", delimiter=",", skiprows=1)
+        ori_data = np.loadtxt(".venv/lib/python3.10/site-packages/timegan/data/stock_data.csv", delimiter=",", skiprows=1)
     elif data_name == "energy":
         ori_data = np.loadtxt("data/energy_data.csv", delimiter=",", skiprows=1)
 
