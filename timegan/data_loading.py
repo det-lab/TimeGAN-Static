@@ -22,6 +22,8 @@ data_loading.py
 # mypy: ignore-errors
 
 ## Necessary Packages
+import importlib
+
 import numpy as np
 
 
@@ -92,7 +94,7 @@ def real_data_loading(data_name, seq_len):
 
     if data_name == "stock":
         ori_data = np.loadtxt(
-            ".venv/lib/python3.10/site-packages/timegan/data/stock_data.csv", delimiter=",", skiprows=1
+            importlib.resources.open_binary("timegan.data", "stock_data.csv"), delimiter=",", skiprows=1
         )
     elif data_name == "energy":
         ori_data = np.loadtxt("data/energy_data.csv", delimiter=",", skiprows=1)
