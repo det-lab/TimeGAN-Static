@@ -16,6 +16,7 @@ predictive_metrics.py
 Note: Use Post-hoc RNN to predict one-step ahead (last feature)
 """
 
+# mypy: ignore-errors
 # Necessary Packages
 import numpy as np
 import tensorflow as tf

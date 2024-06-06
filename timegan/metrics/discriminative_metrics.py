@@ -18,6 +18,7 @@ Note: Use post-hoc RNN to classify original data and synthetic data
 Output: discriminative score (np.abs(classification accuracy - 0.5))
 """
 
+# mypy: ignore-errors
 # Necessary Packages
 import numpy as np
 import tensorflow as tf
