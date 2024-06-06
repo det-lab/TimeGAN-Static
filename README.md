@@ -13,7 +13,7 @@ A fork of https://github.com/jsyoon0823/TimeGAN that implements static features 
 
 ## Installing this software
 
-You can install this software into a Python 3.9 - 3.10 environment with 
+You can install this software into a Python 3.9 - 3.10 environment with
 
 ```bash
 pip install timegan
