@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "timegan"
-version = "0.1.6"
+version = "0.1.7"
 description = "A fork of https://github.com/jsyoon0823/TimeGAN that implements static features and snapshotting"
 authors = ["Zack Kromer <fzachary.kromer@ucdenver.edu>"]
 repository = "https://github.com/det-lab/TimeGAN-Static"
