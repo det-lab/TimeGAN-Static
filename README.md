@@ -18,6 +18,18 @@ You can install this software into a Python 3.9 - 3.10 environment with
 ```bash
 pip install timegan
 ```
+## Creating a singularity container
+Creeating a singularity container is currently supported with apptainer
+
+```bash
+apptainer build 'envname'.sif timeGANenv.def
+```
+
+And can be tested with 
+```bash
+apptainer shell 'envname'.sif
+pip list
+```
 
 ## Developing this code
 
