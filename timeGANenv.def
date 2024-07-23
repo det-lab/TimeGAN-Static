@@ -22,7 +22,7 @@ From: ubuntu:24.04
     conda activate timeGANenv
     conda list
     pip install timegan
-    
+
     # testing
     python3 -c 'import timegan'
 
@@ -30,5 +30,3 @@ From: ubuntu:24.04
     export PATH="/opt/conda/bin:$PATH"
     . /opt/conda/etc/profile.d/conda.sh
     conda activate timeGANenv
-
-
