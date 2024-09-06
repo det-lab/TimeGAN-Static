@@ -24,10 +24,10 @@ pip install timegan
 Creeating a singularity container is currently supported with apptainer
 
 ```bash
-apptainer build 'envname'.sif timeGANenv.def
+apptainer build 'envname'.sif env.def
 ```
 
-And can be tested with
+And can be tested by running "pip list" to check for proper timegan installation:
 
 ```bash
 apptainer shell 'envname'.sif
