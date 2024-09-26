@@ -13,6 +13,18 @@ A fork of https://github.com/jsyoon0823/TimeGAN that implements static features 
 
 ## Installing this software
 
+When pushing changes, run the command:
+
+```bash
+make check
+```
+
+to resolve workflow errors, then run:
+
+```bash
+git push
+```
+
 You can install this software into a Python 3.9 - 3.10 environment with
 
 ```bash
