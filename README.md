@@ -11,55 +11,76 @@ A fork of https://github.com/jsyoon0823/TimeGAN that implements static features 
 - **Original Github repository**: <https://github.com/det-lab/TimeGAN-Static/>
 - **Documentation** <https://det-lab.github.io/TimeGAN-Static/>
 
-## Installing this software
+## Installing this Software
 
-When pushing changes, run the command:
-
-```bash
-make check
-```
-
-to resolve workflow errors, then run:
-
-```bash
-git push
-```
-
-You can install this software into a Python 3.9 - 3.10 environment with
+This package is available for install via pip: [timegan · PyPI](https://pypi.org/project/timegan/).
+You will need a Python 3.9 - 3.10 environment to properly match versions with certain dependencies.
 
 ```bash
 pip install timegan
 ```
 
-## Creating a singularity container
+## Creating a Singularity Container
 
-Creeating a singularity container is currently supported with apptainer
+The timegan package is also equipped with a definition file that allows you to build a timegan training container with root.
+
+After cloning the Repository, run the following command within the directory:
 
 ```bash
 apptainer build 'envname'.sif env.def
 ```
 
-And can be tested by running "pip list" to check for proper timegan installation:
+You can test for a proper build to check the timegan version install. It should match the latest version on Github.
 
 ```bash
 apptainer shell 'envname'.sif
 pip list
 ```
 
-## Developing this code
+This will also work if you are using singularity to build.
 
-To finalize the set-up for publishing to PyPi or Artifactory, see [here](https://fpgmaas.github.io/cookiecutter-poetry/features/publishing/#set-up-for-pypi).
-For activating the automatic documentation with MkDocs, see [here](https://fpgmaas.github.io/cookiecutter-poetry/features/mkdocs/#enabling-the-documentation-on-github).
-To enable the code coverage reports, see [here](https://fpgmaas.github.io/cookiecutter-poetry/features/codecov/).
+## (For Developers)
 
-## Releasing a new version
+When uploading any updates, you will need to resolve any build issues before pushing your changes.
 
-- Create an API Token on [Pypi](https://pypi.org/).
-- Add the API Token to your projects secrets with the name `PYPI_TOKEN` by visiting [this page](https://github.com/det-lab/TimeGAN-Static/settings/secrets/actions/new).
-- Create a [new release](https://github.com/det-lab/TimeGAN-Static/releases/new) on Github.
-- Create a new tag in the form `*.*.*`.
+If you need to make any changes, you will need to do a but of set up.
 
-For more details, see [here](https://fpgmaas.github.io/cookiecutter-poetry/features/cicd/#how-to-trigger-a-release).
+First install [Poetry](https://python-poetry.org/docs/), I recommend doing so with pipx. Poetry will allow you to track and manage the dependencies, and git workflow:
+
+```bash
+sudo apt update -y
+sudo apt install pipx
+pipx install poetry
+
+pipx ensurepath
+```
+
+You will need to set pipx locations to your PATH environment and restart your terminal session.
+For Linux:
+
+You will need to install pre-commit as well. You cant do this as an apt install, or via pip within a virtual environment. If you have issues with accessing the git Hooks, see: [How to Set Up Pre-Commit Hooks | Stefanie Molin](https://stefaniemolin.com/articles/devx/pre-commit/setup-guide/)
+
+```bash
+apt install pre-commit
+pre-commit install
+```
+
+Before pushing any updates, run the command:
+
+```bash
+make check
+```
+
+to resolve workflow errors. Then re-commit those changes and push:
+
+```bash
+git commit
+git push
+```
+
+Whenever making changes to the package's code, be sure to update the version number in the pyproject.toml file.
+
+You can upload new versions to pypi via poetry, or through Github. I recommend the latter, but using Poetry gives you a little more control.
 
 ---
 
