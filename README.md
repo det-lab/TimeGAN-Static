@@ -15,7 +15,7 @@ A fork of https://github.com/jsyoon0823/TimeGAN that implements static features 
 
 This package is available for install via pip: [timegan · PyPI](https://pypi.org/project/timegan/).
 
-You will need a Python 3.9 - 3.10 environment to properly match versions with certain dependencies.
+You will need a Python 3.9 - 3.11 environment to properly match versions with certain dependencies.
 
 ```bash
 pip install timegan
