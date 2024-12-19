@@ -14,6 +14,7 @@ A fork of https://github.com/jsyoon0823/TimeGAN that implements static features 
 ## Installing this Software
 
 This package is available for install via pip: [timegan · PyPI](https://pypi.org/project/timegan/).
+
 You will need a Python 3.9 - 3.10 environment to properly match versions with certain dependencies.
 
 ```bash
@@ -52,15 +53,21 @@ Maintaining this repository will require a bit of setup.
 
 <h5> Poetry </h5>
 This repository was built using Poetry, its recommended for all of the management for this repository. You will need also this to commit changes to the repository.
+
 - Functions like "poetry show" will list all the dependencies for running timegan training.
+
 - More details about the use of Poetry for this repository can be found here (perhaps).
+
 <h5>Pyenv</h5>
 The main reason for using pyenv here is for setting up virtual environments.
 Using a virtual environment is ideal for testing and other tasks. I recommending checking the install tutorial by K0nze linked above.
+
 - Pyenv also allows for choosing which version of python you would like to use.
+
 - If preferred, you can accomplish the same things using Conda
 
 <h3>Commit Changes (Linux) </h3>
+
 First install [Poetry](https://python-poetry.org/docs/), you can find more details for the install from this link.
 
 ```bash
@@ -98,6 +105,7 @@ pre-commit install
 
 <h3>Pushing Commits</h3>
 start by staging files to be committed.
+
 Before pushing, run the command to resolve workflow errors:
 
 ```bash
@@ -107,12 +115,15 @@ make check
 ```
 
 If changes were made to your files, they will drop back down to the un-staged section when running "git status".
+
 Then re-stage those files and push a commit:
 
 ```bash
-git commit 'filename'
+git status # If you'd like to double check
+git add 'filename'
 make check # If you'd like to double check
 git status # If you'd like to double check
+git commit
 git push
 ```
 
