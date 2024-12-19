@@ -1,0 +1,1 @@
+{"config":{"lang":["en"],"separator":"[\\s\\-]+","pipeline":["stopWordFilter"]},"docs":[{"location":"","title":"TimeGAN","text":"<p>A fork of https://github.com/jsyoon0823/TimeGAN that implements static features and snapshotting</p>"},{"location":"modules/","title":"Modules","text":""}]}
