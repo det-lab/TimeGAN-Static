@@ -19,7 +19,6 @@ Note: Use original data as training set to generater synthetic data (time-series
 # Necessary Packages
 import tensorflow as tf
 import numpy as np
-from tensorflow.python.ops.gen_math_ops import TV_RequantizePerChannel_out_type
 from utils import extract_time, rnn_cell, random_generator, batch_generator
 import wandb
 
