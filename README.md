@@ -49,7 +49,6 @@ Maintaining this repository will require a bit of setup.
 - [Pyenv Virtual environment | K0nze](https://k0nze.dev/posts/install-pyenv-venv-vscode/)
   - You can also use [Conda](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html) for this
 - Python 3.9-3.10
-- Additional... (perhaps)
 
 <h5> Poetry </h5>
 This repository was built using Poetry, its recommended for all of the management for this repository. You will need also this to commit changes to the repository.
@@ -63,8 +62,6 @@ The main reason for using pyenv here is for setting up virtual environments.
 Using a virtual environment is ideal for testing and other tasks. I recommending checking the install tutorial by K0nze linked above.
 
 - Pyenv also allows for choosing which version of python you would like to use.
-
-- If preferred, you can accomplish the same things using Conda
 
 <h3>Commit Changes (Linux) </h3>
 
