@@ -672,7 +672,7 @@ def train_timegan_timed(
                 return (3, itt)
         # Final training phase finished, proceed to data generation
         print("Finish Joint Training")
-    if phase < 4 or phase >= 0:
+    if phase > 4 or phase <= 0:
         # Invalid phase number
         return (-1, str(phase) + " is not a valid phase indicator")
 
