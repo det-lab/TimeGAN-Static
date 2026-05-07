@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: TimeGAN-Static
+version: 0.1.8
+abstract: >-
+  A fork of jsyoon0823/TimeGAN that extends the original Time-series
+  Generative Adversarial Networks implementation with support for static
+  features and model snapshotting.
+license: Apache-2.0
+repository-code: "https://github.com/det-lab/TimeGAN-Static"
+authors:
+  - given-names: Amy
+    family-names: Roberts
+    orcid: "https://orcid.org/0000-0001-8538-9155"
+  - given-names: Zack
+    family-names: Kromer
+    orcid: "https://orcid.org/0000-0002-4429-4229"
+  - given-names: Dennis
+    family-names: Pradhan
+  - given-names: Jinsung
+    family-names: Yoon
+    website: "https://sites.google.com/view/jinsungyoon/contact"
+references:
+  - type: software
+    title: TimeGAN
+    authors:
+      - given-names: Jinsung
+        family-names: Yoon
+        website: "https://sites.google.com/view/jinsungyoon/contact"
+    repository-code: "https://github.com/jsyoon0823/TimeGAN"
+    notes: >-
+      Original TimeGAN implementation. This software is a fork of that work.
