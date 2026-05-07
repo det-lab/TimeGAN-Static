@@ -1,23 +1,27 @@
-[tool.poetry]
+[project]
 name = "timegan"
 version = "0.1.8"
 description = "A fork of https://github.com/jsyoon0823/TimeGAN that implements static features and snapshotting"
-authors = ["Zack Kromer <fzachary.kromer@ucdenver.edu>"]
-repository = "https://github.com/det-lab/TimeGAN-Static"
-documentation = "https://det-lab.github.io/TimeGAN-Static/"
 readme = "README.md"
-packages = [
-  {include = "timegan"}
+requires-python = ">=3.10,<3.11"
+authors = [
+    {name = "Zack Kromer", email = "fzachary.kromer@ucdenver.edu"}
+]
+dependencies = [
+    "tensorflow==2.11.0",
+    "numpy==1.26.4",
+    "utils",
+    "scikit-learn>=1.4.2,<2.0.0",
+    "matplotlib>=3.1.1,<4.0.0",
+    "tf-slim",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.11"
-tensorflow = "2.11.0"
-numpy = "1.26.4"
-utils = "*"
-scikit-learn = "^1.4.2"
-matplotlib = "^3.1.1"
-tf-slim = "*"
+[project.urls]
+Repository = "https://github.com/det-lab/TimeGAN-Static"
+Documentation = "https://det-lab.github.io/TimeGAN-Static/"
+
+[project.scripts]
+test = "tests.tutorial:start"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.2.0"
@@ -32,11 +36,8 @@ mkdocs = "^1.4.2"
 mkdocs-material = "^9.2.7"
 mkdocstrings = {extras = ["python"], version = "^0.23.0"}
 
-[tool.poetry.scripts]
-test = "tests.tutorial:start"
-
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.mypy]
@@ -54,7 +55,7 @@ show_error_codes = "True"
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py37"
+target-version = "py310"
 line-length = 120
 fix = true
 select = [
