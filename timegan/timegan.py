@@ -326,11 +326,11 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
     G_loss_V = G_loss_V1 + G_loss_V2
 
     # 4. Summation
-    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S) + 100 * G_loss_V
+    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S + 1e-6) + 100 * G_loss_V
 
     # Embedder network loss
     E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
-    E_loss0 = 10 * tf.sqrt(E_loss_T0)
+    E_loss0 = 10 * tf.sqrt(E_loss_T0 + 1e-6)
     E_loss = E_loss0 + 0.1 * G_loss_S
 
     # optimizer
@@ -357,7 +357,7 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
         _, step_e_loss = sess.run([E0_solver, E_loss_T0], feed_dict={X: X_mb, T: T_mb})
         # Checkpoint
         if itt % 10 == 0:  # Formerly 100 or 1000
-            print("step: " + str(itt) + "/" + str(iterations) + ", e_loss: " + str(np.round(np.sqrt(step_e_loss), 4)))
+            print("step: " + str(itt) + "/" + str(iterations) + ", e_loss: " + str(np.round(np.sqrt(step_e_loss + 1e-6), 4)))
 
     print("Finish Embedding Network Training")
 
@@ -373,7 +373,7 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
         _, step_g_loss_s = sess.run([GS_solver, G_loss_S], feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
         # Checkpoint
         if itt % 10 == 0:  # Formerly 100 or 1000
-            print("step: " + str(itt) + "/" + str(iterations) + ", s_loss: " + str(np.round(np.sqrt(step_g_loss_s), 4)))
+            print("step: " + str(itt) + "/" + str(iterations) + ", s_loss: " + str(np.round(np.sqrt(step_g_loss_s + 1e-6), 4)))
 
     print("Finish Training with Supervised Loss Only")
 
@@ -417,11 +417,11 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
                 + ", g_loss_u: "
                 + str(np.round(step_g_loss_u, 4))
                 + ", g_loss_s: "
-                + str(np.round(np.sqrt(step_g_loss_s), 4))
+                + str(np.round(np.sqrt(step_g_loss_s + 1e-6), 4))
                 + ", g_loss_v: "
                 + str(np.round(step_g_loss_v, 4))
                 + ", e_loss_t0: "
-                + str(np.round(np.sqrt(step_e_loss_t0), 4))
+                + str(np.round(np.sqrt(step_e_loss_t0 + 1e-6), 4))
             )
     print("Finish Joint Training")
 
@@ -562,11 +562,11 @@ def train_timegan_timed(
     G_loss_V = G_loss_V1 + G_loss_V2
 
     # 4. Summation
-    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S) + 100 * G_loss_V
+    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S + 1e-6) + 100 * G_loss_V
 
     # Embedder network loss
     E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
-    E_loss0 = 10 * tf.sqrt(E_loss_T0)
+    E_loss0 = 10 * tf.sqrt(E_loss_T0 + 1e-6)
     E_loss = E_loss0 + 0.1 * G_loss_S
 
     # optimizer
@@ -790,11 +790,11 @@ def load_timegan(ori_data, parameters, filename):
     G_loss_V = G_loss_V1 + G_loss_V2
 
     # 4. Summation
-    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S) + 100 * G_loss_V
+    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S + 1e-6) + 100 * G_loss_V
 
     # Embedder network loss
     E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
-    E_loss0 = 10 * tf.sqrt(E_loss_T0)
+    E_loss0 = 10 * tf.sqrt(E_loss_T0 + 1e-6)
     E_loss = E_loss0 + 0.1 * G_loss_S
 
     # optimizer
