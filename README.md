@@ -1,4 +1,4 @@
-# TimeGAN
+# TimeGAN-Static
 
 [![Release](https://img.shields.io/github/v/release/det-lab/TimeGAN-Static)](https://img.shields.io/github/v/release/det-lab/TimeGAN-Static)
 [![Build status](https://img.shields.io/github/actions/workflow/status/det-lab/TimeGAN-Static/main.yml?branch=main)](https://github.com/det-lab/TimeGAN-Static/actions/workflows/main.yml?query=branch%3Amain)
@@ -15,7 +15,7 @@ A fork of https://github.com/jsyoon0823/TimeGAN that implements static features 
 
 This package is available for install via pip: [timegan · PyPI](https://pypi.org/project/timegan/).
 
-You will need a Python 3.9 - 3.11 environment to properly match versions with certain dependencies.
+You will need a Python 3.10 environment to properly match versions with certain dependencies.
 
 ```bash
 pip install timegan
