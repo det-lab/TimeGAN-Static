@@ -1,6 +1,6 @@
 [project]
 name = "timegan"
-version = "0.1.9"
+version = "0.1.13"
 description = "A fork of https://github.com/jsyoon0823/TimeGAN that implements static features and snapshotting"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
