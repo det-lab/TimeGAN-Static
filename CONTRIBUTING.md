@@ -1,4 +1,4 @@
-# Contributing to `TimeGAN`
+# Contributing to `TimeGAN-Static`
 
 Contributions are welcome, and they are greatly appreciated!
 Every little bit helps, and credit will always be given.
@@ -9,7 +9,7 @@ You can contribute in many ways:
 
 ## Report Bugs
 
-Report bugs at https://github.com/zkromerUCD/TimeGAN/issues
+Report bugs at https://github.com/det-lab/TimeGAN-Static/issues
 
 If you are reporting a bug, please include:
 
@@ -29,11 +29,11 @@ Anything tagged with "enhancement" and "help wanted" is open to whoever wants to
 
 ## Write Documentation
 
-Cookiecutter PyPackage could always use more documentation, whether as part of the official docs, in docstrings, or even on the web in blog posts, articles, and such.
+TimeGAN-Static could always use more documentation, whether as part of the official docs, in docstrings, or even on the web in blog posts, articles, and such.
 
 ## Submit Feedback
 
-The best way to send feedback is to file an issue at https://github.com/zkromerUCD/TimeGAN/issues.
+The best way to send feedback is to file an issue at https://github.com/det-lab/TimeGAN-Static/issues.
 
 If you are proposing a new feature:
 
@@ -44,28 +44,37 @@ If you are proposing a new feature:
 
 # Get Started!
 
-Ready to contribute? Here's how to set up `TimeGAN` for local development.
-Please note this documentation assumes you already have `poetry` and `Git` installed and ready to go.
+Ready to contribute? Here's how to set up `TimeGAN-Static` for local development.
+Please note this documentation assumes you already have `Git` installed and ready to go.
 
-1. Fork the `TimeGAN` repo on GitHub.
+If you don't already have `poetry` installed, the quickest way on Linux/macOS is via `pipx`:
+
+```bash
+pipx install poetry
+pipx ensurepath
+```
+
+See the [Poetry docs](https://python-poetry.org/docs/#installation) for other install methods.
+
+1. Fork the `TimeGAN-Static` repo on GitHub.
 
 2. Clone your fork locally:
 
 ```bash
 cd <directory_in_which_repo_should_be_created>
-git clone git@github.com:YOUR_NAME/TimeGAN.git
+git clone git@github.com:YOUR_NAME/TimeGAN-Static.git
 ```
 
 3. Now we need to install the environment. Navigate into the directory
 
 ```bash
-cd TimeGAN
+cd TimeGAN-Static
 ```
 
-If you are using `pyenv`, select a version to use locally. (See installed versions with `pyenv versions`)
+This project currently supports Python 3.10 only — it's the only version tested in CI and compatible with the pinned TensorFlow version. If you are using `pyenv`, select a 3.10 version to use locally (see installed versions with `pyenv versions`):
 
 ```bash
-pyenv local <x.y.z>
+pyenv local 3.10
 ```
 
 Then, install and activate the environment with:
@@ -97,7 +106,7 @@ Now you can make your changes locally.
 make check
 ```
 
-Now, validate that all unit tests are passing:
+8. Now, validate that all unit tests are passing:
 
 ```bash
 make test
