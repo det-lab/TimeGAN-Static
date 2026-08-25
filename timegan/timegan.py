@@ -610,13 +610,18 @@ def train_timegan_timed(
 
     # 1. Embedding network training
     if phase == 1:
-        print("Start Embedding Network Training")
+        print("Start Embedding Network Training", flush=True)
 
         for itt in range(current_iter, iterations):
             # Set mini-batch
             X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
             # Train embedder
             _, step_e_loss = sess.run([E0_solver, E_loss_T0], feed_dict={X: X_mb, T: T_mb})
+
+            if itt % 50 == 0:
+                elapsed = (time_ns() - start_time) / 1e9
+                print(f"phase 1 iter {itt}/{iterations} e_loss={step_e_loss:.4f} "
+                      f"elapsed={elapsed:.0f}s", flush=True)
 
             # End/suspend training if time is over max
             now = time_ns()
@@ -625,12 +630,12 @@ def train_timegan_timed(
                 return (1, itt)
 
         # Training phase finished, save model and increment phase
-        print("Finish Embedding Network Training")
+        print("Finish Embedding Network Training", flush=True)
         saver.save(sess, out_filename, global_step=version)
         phase = 2
     if phase == 2:
         # 2. Training only with supervised loss
-        print("Start Training with Supervised Loss Only")
+        print("Start Training with Supervised Loss Only", flush=True)
 
         for itt in range(current_iter, iterations):
             # Set mini-batch
@@ -640,6 +645,11 @@ def train_timegan_timed(
             # Train generator
             _, step_g_loss_s = sess.run([GS_solver, G_loss_S], feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
 
+            if itt % 50 == 0:
+                elapsed = (time_ns() - start_time) / 1e9
+                print(f"phase 2 iter {itt}/{iterations} g_loss_s={step_g_loss_s:.4f} "
+                      f"elapsed={elapsed:.0f}s", flush=True)
+
             # End/suspend training if time is over max
             now = time_ns()
             if now - start_time >= max_time_ns:
@@ -647,12 +657,12 @@ def train_timegan_timed(
                 return (2, itt)
 
         # Training phase finished, save model and increment phase
-        print("Finish Training with Supervised Loss Only")
+        print("Finish Training with Supervised Loss Only", flush=True)
         saver.save(sess, out_filename, global_step=version)
         phase = 3
     if phase == 3:
         # 3. Joint Training
-        print("Start Joint Training")
+        print("Start Joint Training", flush=True)
 
         for itt in range(current_iter, iterations):
             # Generator training (twice more than discriminator training)
@@ -679,13 +689,19 @@ def train_timegan_timed(
             if check_d_loss > 0.15:
                 _, step_d_loss = sess.run([D_solver, D_loss], feed_dict={X: X_mb, T: T_mb, Z: Z_mb})
 
+            if itt % 50 == 0:
+                elapsed = (time_ns() - start_time) / 1e9
+                print(f"phase 3 iter {itt}/{iterations} g_loss_u={step_g_loss_u:.4f} "
+                      f"g_loss_s={step_g_loss_s:.4f} g_loss_v={step_g_loss_v:.4f} "
+                      f"d_loss={check_d_loss:.4f} elapsed={elapsed:.0f}s", flush=True)
+
             # End/suspend training if time is over max
             now = time_ns()
             if now - start_time >= max_time_ns:
                 saver.save(sess, out_filename, global_step=version)
                 return (3, itt)
         # Final training phase finished, proceed to data generation
-        print("Finish Joint Training")
+        print("Finish Joint Training", flush=True)
     if phase > 4 or phase <= 0:
         # Invalid phase number
         return (-1, str(phase) + " is not a valid phase indicator")
