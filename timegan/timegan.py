@@ -18,6 +18,7 @@ Note: Use original data as training set to generater synthetic data (time-series
 
 # mypy: ignore-errors
 # Necessary Packages
+import os
 from time import time_ns
 
 import numpy as np
@@ -496,6 +497,12 @@ def train_timegan_timed(
     if out_filename is None:
         out_filename = in_filename
 
+    # Saver.save()'s pointer file defaults to a bare "checkpoint" in the
+    # working directory, shared (and clobbered) across every out_filename --
+    # name it after out_filename instead so concurrent/different runs don't
+    # overwrite each other's pointer.
+    checkpoint_filename = os.path.basename(out_filename) + "_checkpoint"
+
     # Initialization on the Graph
     tf.compat.v1.reset_default_graph()
 
@@ -626,12 +633,12 @@ def train_timegan_timed(
             # End/suspend training if time is over max
             now = time_ns()
             if now - start_time >= max_time_ns:
-                saver.save(sess, out_filename, global_step=version)
+                saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
                 return (1, itt)
 
         # Training phase finished, save model and increment phase
         print("Finish Embedding Network Training", flush=True)
-        saver.save(sess, out_filename, global_step=version)
+        saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
         phase = 2
     if phase == 2:
         # 2. Training only with supervised loss
@@ -653,12 +660,12 @@ def train_timegan_timed(
             # End/suspend training if time is over max
             now = time_ns()
             if now - start_time >= max_time_ns:
-                saver.save(sess, out_filename, global_step=version)
+                saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
                 return (2, itt)
 
         # Training phase finished, save model and increment phase
         print("Finish Training with Supervised Loss Only", flush=True)
-        saver.save(sess, out_filename, global_step=version)
+        saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
         phase = 3
     if phase == 3:
         # 3. Joint Training
@@ -698,7 +705,7 @@ def train_timegan_timed(
             # End/suspend training if time is over max
             now = time_ns()
             if now - start_time >= max_time_ns:
-                saver.save(sess, out_filename, global_step=version)
+                saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
                 return (3, itt)
         # Final training phase finished, proceed to data generation
         print("Finish Joint Training", flush=True)
@@ -721,7 +728,7 @@ def train_timegan_timed(
     generated_data = generated_data + min_val
 
     # Save
-    saver.save(sess, out_filename, global_step=version)
+    saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
 
     return (4, generated_data)
 
