@@ -389,7 +389,14 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
         _, step_e_loss = sess.run([E0_solver, E_loss_T0], feed_dict={X: X_mb, T: T_mb})
         # Checkpoint
         if itt % 1000 == 0:
-            print("step: " + str(itt) + "/" + str(iterations) + ", e_loss: " + str(np.round(np.sqrt(step_e_loss + 1e-6), 4)))
+            print(
+                "step: "
+                + str(itt)
+                + "/"
+                + str(iterations)
+                + ", e_loss: "
+                + str(np.round(np.sqrt(step_e_loss + 1e-6), 4))
+            )
 
     print("Finish Embedding Network Training")
 
@@ -405,7 +412,14 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
         _, step_g_loss_s = sess.run([GS_solver, G_loss_S], feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
         # Checkpoint
         if itt % 1000 == 0:
-            print("step: " + str(itt) + "/" + str(iterations) + ", s_loss: " + str(np.round(np.sqrt(step_g_loss_s + 1e-6), 4)))
+            print(
+                "step: "
+                + str(itt)
+                + "/"
+                + str(iterations)
+                + ", s_loss: "
+                + str(np.round(np.sqrt(step_g_loss_s + 1e-6), 4))
+            )
 
     print("Finish Training with Supervised Loss Only")
 
