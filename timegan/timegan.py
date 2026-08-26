@@ -709,13 +709,34 @@ def train_timegan_timed(
                 return (3, itt)
         # Final training phase finished, proceed to data generation
         print("Finish Joint Training", flush=True)
+        # Checkpoint here, before generation -- generation runs a separate
+        # sess.run() below that a large `no` can crash (see the chunking
+        # note below), and until now the only save() after joint training
+        # completes was the one at the very end of this function, past that
+        # risk. Without this, a generation-step crash loses all of phase
+        # 3's training with no way to resume it.
+        saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
     if phase > 4 or phase <= 0:
         # Invalid phase number
         return (-1, str(phase) + " is not a valid phase indicator")
 
     ## Synthetic data generation
-    Z_mb = random_generator(no, z_dim, ori_time, max_seq_len)
-    generated_data_curr = sess.run(X_hat, feed_dict={Z: Z_mb, X: ori_data, T: ori_time})
+    # Chunked at batch_size rather than one sess.run() over all `no`
+    # events -- confirmed on an A100 that a single-shot call with
+    # no=289,636 (hidden_dim=128) crashes TensorFlow's GPU concat kernel
+    # ("invalid configuration argument"), a fatal C++-level abort that
+    # skips Python exception handling entirely. batch_size is already
+    # proven safe at this hardware/model size (every training step above
+    # uses it), so reuse it here rather than guess a new threshold.
+    generated_data_curr = np.zeros([no, max_seq_len, dim])
+    for start in range(0, no, batch_size):
+        end = min(start + batch_size, no)
+        T_chunk = ori_time[start:end]
+        Z_chunk = random_generator(end - start, z_dim, T_chunk, max_seq_len)
+        X_chunk = ori_data[start:end]
+        generated_data_curr[start:end] = sess.run(
+            X_hat, feed_dict={Z: Z_chunk, X: X_chunk, T: T_chunk}
+        )
 
     generated_data = list()
 
