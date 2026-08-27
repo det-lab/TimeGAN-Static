@@ -460,39 +460,50 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
     return generated_data
 
 
-# Trains a timeGAN model for a specific number of seconds, and then stops training, and saves session
-# Parameters
-# - ori_data: the original data
-# - parameters: network parameters (iterations is changed to remaining iterations)
-# - in_filename: the filename to load from
-# - out_filename: the filename to save to; if None, will save to in_filename instead
-# - seconds: maximum number of seconds to train for
-# - phase: the current phase of training (integer)
-#          1 - Embedding network training
-#          2 - Supervised loss
-#          3 - Joint training
-#          4 - Data generation
-# - current_iter: the current iteration that training paused on
-# - new: whether or not to start training network from scratch - defaults to False
-# - version: version of the savefile
-#
-# Returns: A tuple of variable length; the first element of the tuple determines its length and content
-#          First value of -1 (error)
-#                (-1, msg)
-#                - -1: phase indicator; indicates that there is an error
-#                - msg: error message
-#          First value of 1, 2 or 3 (the network still needs to train)
-#                (next_phase, iter)
-#                - next_phase: the phase to be run in the next use of this function; either phase, or phase+1
-#                              depending upon if the current phase has completed
-#                - iter: how many iterations have been completed
-#          First value of 4 (training is finished; data is generated)
-#                (4, generated_data)
-#                - 4: phase indicator; should be 4 to indicate that training has been finished/data has been generated
-#                - generated_data: generated data
 def train_timegan_timed(
-    ori_data, parameters, in_filename, out_filename=None, seconds=3600, phase=1, current_iter=0, new=False, version=0
+    ori_data, parameters, in_filename, out_filename=None, seconds=3600, phase=1, current_iter=0, new=False, version=0,
+    num_generate=None,
 ):
+    """Trains a TimeGAN model for a specific number of seconds, then stops and saves the session.
+
+    Resumable across four phases (embedding, supervised, joint/adversarial training, then
+    generation), so a caller can invoke this repeatedly with a time budget per call until phase 4
+    is reached.
+
+    Args:
+      - ori_data: the original data
+      - parameters: network parameters (iterations is changed to remaining iterations)
+      - in_filename: the filename to load from
+      - out_filename: the filename to save to; if None, will save to in_filename instead
+      - seconds: maximum number of seconds to train for
+      - phase: the current phase of training (integer)
+          - 1: Embedding network training
+          - 2: Supervised loss
+          - 3: Joint training
+          - 4: Data generation
+      - current_iter: the current iteration that training paused on
+      - new: whether or not to start training network from scratch - defaults to False
+      - version: version of the savefile
+      - num_generate: how many synthetic sequences to produce in the phase-4 generation step;
+          defaults to None, meaning one per training example (len(ori_data)), matching the
+          original one-to-one behavior. Useful to request fewer (e.g. for a quick quality check)
+          or more than the training set size; ori_data/ori_time are cycled with modulo indexing
+          to support either direction.
+
+    Returns:
+      A tuple of variable length; the first element of the tuple determines its length and content.
+        - First value of -1 (error): (-1, msg)
+            - -1: phase indicator; indicates that there is an error
+            - msg: error message
+        - First value of 1, 2 or 3 (the network still needs to train): (next_phase, iter)
+            - next_phase: the phase to be run in the next use of this function; either phase, or
+              phase+1 depending upon if the current phase has completed
+            - iter: how many iterations have been completed
+        - First value of 4 (training is finished; data is generated): (4, generated_data)
+            - 4: phase indicator; should be 4 to indicate that training has been finished/data has
+              been generated
+            - generated_data: generated data
+    """
     # Set output filename to input filename if no output filename is provided
     if out_filename is None:
         out_filename = in_filename
@@ -728,20 +739,29 @@ def train_timegan_timed(
     # skips Python exception handling entirely. batch_size is already
     # proven safe at this hardware/model size (every training step above
     # uses it), so reuse it here rather than guess a new threshold.
-    generated_data_curr = np.zeros([no, max_seq_len, dim])
-    for start in range(0, no, batch_size):
-        end = min(start + batch_size, no)
-        T_chunk = ori_time[start:end]
+    #
+    # num_generate lets a caller ask for fewer (or more) synthetic sequences
+    # than there are training examples -- e.g. a debug run only needs a few
+    # hundred samples to sanity-check quality, not one per training event.
+    # Defaults to `no` to match prior behavior exactly. ori_time/ori_data are
+    # cycled with modulo indexing so num_generate can exceed `no` too.
+    if num_generate is None:
+        num_generate = no
+    gen_time = [ori_time[i % no] for i in range(num_generate)]
+    generated_data_curr = np.zeros([num_generate, max_seq_len, dim])
+    for start in range(0, num_generate, batch_size):
+        end = min(start + batch_size, num_generate)
+        T_chunk = gen_time[start:end]
         Z_chunk = random_generator(end - start, z_dim, T_chunk, max_seq_len)
-        X_chunk = ori_data[start:end]
+        X_chunk = ori_data[[i % no for i in range(start, end)]]
         generated_data_curr[start:end] = sess.run(
             X_hat, feed_dict={Z: Z_chunk, X: X_chunk, T: T_chunk}
         )
 
     generated_data = list()
 
-    for i in range(no):
-        temp = generated_data_curr[i, : ori_time[i], :]
+    for i in range(num_generate):
+        temp = generated_data_curr[i, : gen_time[i], :]
         generated_data.append(temp)
 
     # Renormalization
