@@ -470,6 +470,12 @@ def train_timegan_timed(
     generation), so a caller can invoke this repeatedly with a time budget per call until phase 4
     is reached.
 
+    Phase 3 also periodically (same cadence as its loss logging) prints a variance_check line:
+    the ratio of generated to real per-timestep standard deviation on the current minibatch, mean
+    and range across timesteps. Loss values alone can look stable even when the generator has
+    collapsed toward reproducing the dominant mode instead of the real data's actual spread --
+    watch for this ratio trending toward 0 as training progresses.
+
     Args:
       - ori_data: the original data
       - parameters: network parameters (iterations is changed to remaining iterations)
@@ -717,6 +723,23 @@ def train_timegan_timed(
                 print(f"phase 3 iter {itt}/{iterations} g_loss_u={step_g_loss_u:.4f} "
                       f"g_loss_s={step_g_loss_s:.4f} g_loss_v={step_g_loss_v:.4f} "
                       f"d_loss={check_d_loss:.4f} elapsed={elapsed:.0f}s", flush=True)
+
+                # Per-timestep variance check on the same minibatch used for
+                # the discriminator loss above: catches a generator
+                # collapsing toward the mean while the run is still in
+                # progress, rather than only after generation finishes and
+                # the output looks flat. Loss values alone don't show this
+                # -- a stable-looking d_loss/g_loss_u is consistent with
+                # both a healthy adversarial game AND a generator that's
+                # settled for reproducing the dominant mode.
+                gen_batch = sess.run(X_hat, feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
+                real_std = np.std(X_mb, axis=0)
+                gen_std = np.std(gen_batch, axis=0)
+                ratio = gen_std / (real_std + 1e-8)
+                print(f"phase 3 iter {itt}/{iterations} variance_check "
+                      f"(generated_std/real_std, per timestep): "
+                      f"mean={ratio.mean():.3f} min={ratio.min():.3f} max={ratio.max():.3f}",
+                      flush=True)
 
             # End/suspend training if time is over max
             now = time_ns()
