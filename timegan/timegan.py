@@ -462,7 +462,7 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
 
 def train_timegan_timed(
     ori_data, parameters, in_filename, out_filename=None, seconds=3600, phase=1, current_iter=0, new=False, version=0,
-    num_generate=None,
+    num_generate=None, on_training_complete=None,
 ):
     """Trains a TimeGAN model for a specific number of seconds, then stops and saves the session.
 
@@ -489,6 +489,11 @@ def train_timegan_timed(
           original one-to-one behavior. Useful to request fewer (e.g. for a quick quality check)
           or more than the training set size; ori_data/ori_time are cycled with modulo indexing
           to support either direction.
+      - on_training_complete: optional zero-argument callback invoked right after phase 3's
+          post-training checkpoint save, before generation begins. Lets a caller record that
+          training is done (e.g. write its own progress marker) in case generation itself gets
+          killed before this function returns -- a resubmit with phase=4 and new=False resumes
+          directly at generation using that checkpoint, skipping training entirely.
 
     Returns:
       A tuple of variable length; the first element of the tuple determines its length and content.
@@ -727,6 +732,19 @@ def train_timegan_timed(
         # risk. Without this, a generation-step crash loses all of phase
         # 3's training with no way to resume it.
         saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
+        # A caller-supplied hook to record that training is done and only
+        # generation remains, e.g. writing a progress marker -- this function
+        # doesn't return control between the checkpoint above and the
+        # generation loop below, so without this hook a hard kill (SLURM
+        # walltime, etc.) during generation looks indistinguishable from a
+        # kill before training ever finished, and a resubmit would restart
+        # from phase 1 despite the checkpoint above holding a trained model.
+        # A resubmit with phase=4 and new=False resumes correctly, since the
+        # phase==1/2/3 blocks above are simple `if`s (not elif) that are
+        # skipped when phase is already 4, falling straight through to
+        # generation using the restored checkpoint.
+        if on_training_complete is not None:
+            on_training_complete()
     if phase > 4 or phase <= 0:
         # Invalid phase number
         return (-1, str(phase) + " is not a valid phase indicator")
@@ -747,6 +765,7 @@ def train_timegan_timed(
     # cycled with modulo indexing so num_generate can exceed `no` too.
     if num_generate is None:
         num_generate = no
+    print(f"Start Data Generation, {num_generate} sequences in batches of {batch_size}", flush=True)
     gen_time = [ori_time[i % no] for i in range(num_generate)]
     generated_data_curr = np.zeros([num_generate, max_seq_len, dim])
     for start in range(0, num_generate, batch_size):
@@ -757,6 +776,13 @@ def train_timegan_timed(
         generated_data_curr[start:end] = sess.run(
             X_hat, feed_dict={Z: Z_chunk, X: X_chunk, T: T_chunk}
         )
+
+        # Chunks, not individual sequences, so this can't reuse the `itt % 50`
+        # pacing above -- print roughly as often instead (every 50 chunks).
+        if (start // batch_size) % 50 == 0:
+            elapsed = (time_ns() - start_time) / 1e9
+            print(f"generation {end}/{num_generate} elapsed={elapsed:.0f}s", flush=True)
+    print("Finish Data Generation", flush=True)
 
     generated_data = list()
 
