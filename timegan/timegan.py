@@ -18,6 +18,7 @@ Note: Use original data as training set to generater synthetic data (time-series
 
 # mypy: ignore-errors
 # Necessary Packages
+import json
 import os
 from time import time_ns
 
@@ -476,6 +477,12 @@ def train_timegan_timed(
     collapsed toward reproducing the dominant mode instead of the real data's actual spread --
     watch for this ratio trending toward 0 as training progresses.
 
+    Every periodic print above (all three phases) is also appended as a JSON line to
+    `<out_filename>_history.jsonl` (fields match whatever's in that phase's print line), so a
+    caller can plot loss curves / the variance_check ratio over iterations after the fact instead
+    of only reading them from scrolling log output. Appended across resumed invocations, same as
+    the checkpoint itself.
+
     Args:
       - ori_data: the original data
       - parameters: network parameters (iterations is changed to remaining iterations)
@@ -524,6 +531,18 @@ def train_timegan_timed(
     # name it after out_filename instead so concurrent/different runs don't
     # overwrite each other's pointer.
     checkpoint_filename = os.path.basename(out_filename) + "_checkpoint"
+
+    # Loss/variance_check history, one JSON object per line, same fields
+    # as whatever's printed at each periodic checkpoint below. Opened in
+    # append mode so a killed-and-resumed run's history survives across
+    # invocations, same as the checkpoint itself -- iter numbers don't
+    # repeat across a resume since `current_iter` picks up where the
+    # previous invocation left off.
+    history_filename = out_filename + "_history.jsonl"
+
+    def log_history(record):
+        with open(history_filename, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
     # Initialization on the Graph
     tf.compat.v1.reset_default_graph()
@@ -651,6 +670,7 @@ def train_timegan_timed(
                 elapsed = (time_ns() - start_time) / 1e9
                 print(f"phase 1 iter {itt}/{iterations} e_loss={step_e_loss:.4f} "
                       f"elapsed={elapsed:.0f}s", flush=True)
+                log_history({"phase": 1, "iter": itt, "elapsed": elapsed, "e_loss": float(step_e_loss)})
 
             # End/suspend training if time is over max
             now = time_ns()
@@ -678,6 +698,7 @@ def train_timegan_timed(
                 elapsed = (time_ns() - start_time) / 1e9
                 print(f"phase 2 iter {itt}/{iterations} g_loss_s={step_g_loss_s:.4f} "
                       f"elapsed={elapsed:.0f}s", flush=True)
+                log_history({"phase": 2, "iter": itt, "elapsed": elapsed, "g_loss_s": float(step_g_loss_s)})
 
             # End/suspend training if time is over max
             now = time_ns()
@@ -740,6 +761,14 @@ def train_timegan_timed(
                       f"(generated_std/real_std, per timestep): "
                       f"mean={ratio.mean():.3f} min={ratio.min():.3f} max={ratio.max():.3f}",
                       flush=True)
+                log_history({
+                    "phase": 3, "iter": itt, "elapsed": elapsed,
+                    "g_loss_u": float(step_g_loss_u), "g_loss_s": float(step_g_loss_s),
+                    "g_loss_v": float(step_g_loss_v), "d_loss": float(check_d_loss),
+                    "variance_ratio_mean": float(ratio.mean()),
+                    "variance_ratio_min": float(ratio.min()),
+                    "variance_ratio_max": float(ratio.max()),
+                })
 
             # End/suspend training if time is over max
             now = time_ns()
