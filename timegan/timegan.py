@@ -502,6 +502,25 @@ def train_timegan_timed(
           original one-to-one behavior. Useful to request fewer (e.g. for a quick quality check)
           or more than the training set size; ori_data/ori_time are cycled with modulo indexing
           to support either direction.
+      - parameters may also optionally include (defaults match the original TimeGAN paper's
+          fixed values, so omitting them reproduces prior behavior exactly):
+          - gamma: weight on the embedding-space adversarial terms (G_loss_U_e, D_loss_fake_e).
+              Default 1.
+          - g_loss_s_weight, g_loss_v_weight: weight on G_loss_S (supervised: MSE between a real
+              sequence's next embedded step and the generator's teacher-forced prediction of it)
+              and G_loss_V (moment matching: batch-aggregate mean/std alignment) in the generator's
+              total loss. Default 100 each, matching the original paper. Both are regression-style
+              losses, not adversarial ones -- for any timestep where multiple real sequences share
+              a similar state but diverge afterward, their MSE-optimal target is the conditional
+              *average* of those futures, not a faithful sample of one. At the paper's default
+              weight this term can dominate the adversarial one (G_loss_U) in the total gradient,
+              biasing the generator toward "the average-looking sequence" regardless of its noise
+              input -- mode collapse that per-batch loss values alone don't clearly reveal. Lower
+              these (the two terms independently, since they push in the same mean-seeking
+              direction for different reasons) if generated output looks collapsed toward one or a
+              few dominant modes despite reasonable-looking loss curves; going to zero removes the
+              stabilizing effect these terms provide over pure adversarial training on sequences,
+              so tune down rather than eliminate.
       - on_training_complete: optional zero-argument callback invoked right after phase 3's
           post-training checkpoint save, before generation begins. Lets a caller record that
           training is done (e.g. write its own progress marker) in case generation itself gets
@@ -566,7 +585,15 @@ def train_timegan_timed(
     module_name = parameters["module"]
     parameters["dim"] = dim
     z_dim = dim
-    gamma = 1
+    # setdefault (not a plain local default) so the resolved value -- whether
+    # the caller supplied one or this default -- lands back in the caller's
+    # own parameters dict, the same way `parameters["dim"] = dim` above does.
+    # Callers that log/persist their parameters dict (e.g. into a run's
+    # metadata) get these recorded automatically, with no extra plumbing.
+    parameters.setdefault("gamma", 1)
+    parameters.setdefault("g_loss_s_weight", 100.0)
+    parameters.setdefault("g_loss_v_weight", 100.0)
+    gamma = parameters["gamma"]
 
     # Input place holders
     X = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, dim], name="myinput_x")
@@ -624,7 +651,9 @@ def train_timegan_timed(
     G_loss_V = G_loss_V1 + G_loss_V2
 
     # 4. Summation
-    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S + 1e-6) + 100 * G_loss_V
+    G_loss = (G_loss_U + gamma * G_loss_U_e
+              + parameters["g_loss_s_weight"] * tf.sqrt(G_loss_S + 1e-6)
+              + parameters["g_loss_v_weight"] * G_loss_V)
 
     # Embedder network loss
     E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
