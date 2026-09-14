@@ -93,9 +93,12 @@ def test_train_timegan_timed_on_energy_smoke():
 
 
 def test_train_timegan_base_smoke():
-    """timegan.py's original (non-timed) train_timegan -- the other half
-    of the duplication pattern flagged alongside timegan_static.py. Not
-    used by Traces_GAN, but same-treatment coverage costs little."""
+    """timegan.py's train_timegan -- now a thin wrapper around
+    train_timegan_timed (was previously a full standalone copy of its
+    graph-building/training-loop code, the same "same fix needs applying
+    twice" risk that let timegan_static.py's copy silently break). Not
+    used by Traces_GAN directly, but this is the test that actually
+    exercises the wrapper end to end."""
     np.random.seed(2)
     tf.compat.v1.set_random_seed(2)
     ori_data = _subsample("stock", seq_len=8, n_events=24)

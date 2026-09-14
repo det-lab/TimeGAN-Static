@@ -234,10 +234,23 @@ def discriminator(H, T, param):
 
 
 def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
-    """TimeGAN training function.
+    """TimeGAN training function -- one-shot, non-resumable convenience
+    wrapper around train_timegan_timed().
+
+    This used to be a full, independent copy of train_timegan_timed's graph-
+    building/training-loop code (predating the phase/resume/timing additions
+    there), duplicating everything including its own copies of every
+    embedder/generator/discriminator call and loss formula. That's the exact
+    kind of drift risk that let timegan_static.py's copy of the same code
+    silently break (see that file's history) -- two places to apply the same
+    fix, easy to only remember one. train_timegan_timed's defaults
+    (gamma=1, g_loss_s_weight=g_loss_v_weight=100) already reproduce this
+    function's previously-hardcoded loss weights exactly, so delegating
+    changes no behavior for any existing caller that isn't passing those
+    keys.
 
     Use original data as training set to generater synthetic data (time-series)
-    Trains timegan from scratch
+    Trains timegan from scratch, in a single call, to completion.
 
     Args:
       - ori_data: original time-series data
@@ -247,218 +260,27 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
 
     Returns:
       - generated_data: generated time-series data
+
+    Side effects new since the standalone-copy version: also writes
+    `<filename>_history.jsonl` (loss/variance_check history -- harmless
+    additional output, nothing removed) and names the Saver's checkpoint
+    pointer file after `filename` instead of TF's shared default bare
+    "checkpoint" (an improvement, not a regression -- that shared pointer
+    file is exactly what used to get clobbered across different runs/
+    filenames, which is why train_timegan_timed stopped using it).
     """
-    # Initialization on the Graph
-    tf.compat.v1.reset_default_graph()
-
-    # Basic Parameters
-    no, seq_len, dim = np.asarray(ori_data).shape
-
-    # Maximum sequence length and each sequence length
-    ori_time, max_seq_len = extract_time(ori_data)
-
-    # Normalization
-    ori_data, min_val, max_val = MinMaxScaler(ori_data)
-
-    ## Build a RNN networks
-
-    # Network Parameters
-    hidden_dim = parameters["hidden_dim"]
-    num_layers = parameters["num_layer"]
-    iterations = parameters["iterations"]
-    batch_size = parameters["batch_size"]
-    module_name = parameters["module"]
-    parameters["dim"] = dim
-    z_dim = dim
-    gamma = 1
-
-    # Input place holders
-    X = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, dim], name="myinput_x")
-    Z = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, z_dim], name="myinput_z")
-    T = tf.compat.v1.placeholder(tf.int32, [None], name="myinput_t")
-
-    # Embedder & Recovery
-    H = embedder(X, T, parameters)
-    X_tilde = recovery(H, T, parameters)
-
-    # Generator
-    E_hat = generator(Z, T, parameters)
-    H_hat = supervisor(E_hat, T, parameters)
-    H_hat_supervise = supervisor(H, T, parameters)
-
-    # Synthetic data
-    X_hat = recovery(H_hat, T, parameters)
-
-    # Discriminator
-    Y_fake = discriminator(H_hat, T, parameters)
-    Y_real = discriminator(H, T, parameters)
-    Y_fake_e = discriminator(E_hat, T, parameters)
-
-    # Variables
-    e_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("embedder")]
-    r_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("recovery")]
-    g_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("generator")]
-    s_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("supervisor")]
-    d_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("discriminator")]
-
-    # Discriminator loss
-    D_loss_real = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_real), Y_real)
-    D_loss_fake = tf.compat.v1.losses.sigmoid_cross_entropy(tf.zeros_like(Y_fake), Y_fake)
-    D_loss_fake_e = tf.compat.v1.losses.sigmoid_cross_entropy(tf.zeros_like(Y_fake_e), Y_fake_e)
-    D_loss = D_loss_real + D_loss_fake + gamma * D_loss_fake_e
-
-    # Generator loss
-    # 1. Adversarial loss
-    G_loss_U = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_fake), Y_fake)
-    G_loss_U_e = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_fake_e), Y_fake_e)
-
-    # 2. Supervised loss
-    G_loss_S = tf.compat.v1.losses.mean_squared_error(H[:, 1:, :], H_hat_supervise[:, :-1, :])
-
-    # 3. Two Momments
-    G_loss_V1 = tf.reduce_mean(
-        input_tensor=tf.abs(
-            tf.sqrt(tf.nn.moments(x=X_hat, axes=[0])[1] + 1e-6) - tf.sqrt(tf.nn.moments(x=X, axes=[0])[1] + 1e-6)
-        )
+    phase, info = train_timegan_timed(
+        ori_data, parameters, in_filename=filename, out_filename=filename,
+        seconds=float("inf"), phase=1, current_iter=0, new=True, version=version,
     )
-    G_loss_V2 = tf.reduce_mean(
-        input_tensor=tf.abs((tf.nn.moments(x=X_hat, axes=[0])[0]) - (tf.nn.moments(x=X, axes=[0])[0]))
-    )
-
-    G_loss_V = G_loss_V1 + G_loss_V2
-
-    # 4. Summation
-    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S + 1e-6) + 100 * G_loss_V
-
-    # Embedder network loss
-    E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
-    E_loss0 = 10 * tf.sqrt(E_loss_T0 + 1e-6)
-    E_loss = E_loss0 + 0.1 * G_loss_S
-
-    # optimizer
-    E0_solver = tf.compat.v1.train.AdamOptimizer().minimize(E_loss0, var_list=e_vars + r_vars)
-    E_solver = tf.compat.v1.train.AdamOptimizer().minimize(E_loss, var_list=e_vars + r_vars)
-    D_solver = tf.compat.v1.train.AdamOptimizer().minimize(D_loss, var_list=d_vars)
-    G_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss, var_list=g_vars + s_vars)
-    GS_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss_S, var_list=g_vars + s_vars)
-
-    ## TimeGAN training
-    sess = tf.compat.v1.Session()
-    sess.run(tf.compat.v1.global_variables_initializer())
-
-    # Create Saver
-    saver = tf.compat.v1.train.Saver()
-
-    # 1. Embedding network training
-    print("Start Embedding Network Training")
-
-    for itt in range(iterations):
-        # Set mini-batch
-        X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
-        # Train embedder
-        _, step_e_loss = sess.run([E0_solver, E_loss_T0], feed_dict={X: X_mb, T: T_mb})
-        # Checkpoint
-        if itt % 10 == 0:  # Formerly 100 or 1000
-            print(
-                "step: "
-                + str(itt)
-                + "/"
-                + str(iterations)
-                + ", e_loss: "
-                + str(np.round(np.sqrt(step_e_loss + 1e-6), 4))
-            )
-
-    print("Finish Embedding Network Training")
-
-    # 2. Training only with supervised loss
-    print("Start Training with Supervised Loss Only")
-
-    for itt in range(iterations):
-        # Set mini-batch
-        X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
-        # Random vector generation
-        Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
-        # Train generator
-        _, step_g_loss_s = sess.run([GS_solver, G_loss_S], feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
-        # Checkpoint
-        if itt % 10 == 0:  # Formerly 100 or 1000
-            print(
-                "step: "
-                + str(itt)
-                + "/"
-                + str(iterations)
-                + ", s_loss: "
-                + str(np.round(np.sqrt(step_g_loss_s + 1e-6), 4))
-            )
-
-    print("Finish Training with Supervised Loss Only")
-
-    # 3. Joint Training
-    print("Start Joint Training")
-
-    for itt in range(iterations):
-        # Generator training (twice more than discriminator training)
-        for kk in range(2):
-            # Set mini-batch
-            X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
-            # Random vector generation
-            Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
-            # Train generator
-            _, step_g_loss_u, step_g_loss_s, step_g_loss_v = sess.run(
-                [G_solver, G_loss_U, G_loss_S, G_loss_V], feed_dict={Z: Z_mb, X: X_mb, T: T_mb}
-            )
-            # Train embedder
-            _, step_e_loss_t0 = sess.run([E_solver, E_loss_T0], feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
-
-        # Discriminator training
-        # Set mini-batch
-        X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
-        # Random vector generation
-        Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
-        # Check discriminator loss before updating
-        check_d_loss = sess.run(D_loss, feed_dict={X: X_mb, T: T_mb, Z: Z_mb})
-        # Train discriminator (only when the discriminator does not work well)
-        if check_d_loss > 0.15:
-            _, step_d_loss = sess.run([D_solver, D_loss], feed_dict={X: X_mb, T: T_mb, Z: Z_mb})
-
-        # Print multiple checkpoints
-        if itt % 10 == 0:  # Formerly 100 or 1000
-            print(
-                "step: "
-                + str(itt)
-                + "/"
-                + str(iterations)
-                + ", d_loss: "
-                + str(np.round(step_d_loss, 4))
-                + ", g_loss_u: "
-                + str(np.round(step_g_loss_u, 4))
-                + ", g_loss_s: "
-                + str(np.round(np.sqrt(step_g_loss_s + 1e-6), 4))
-                + ", g_loss_v: "
-                + str(np.round(step_g_loss_v, 4))
-                + ", e_loss_t0: "
-                + str(np.round(np.sqrt(step_e_loss_t0 + 1e-6), 4))
-            )
-    print("Finish Joint Training")
-
-    ## Synthetic data generation
-    Z_mb = random_generator(no, z_dim, ori_time, max_seq_len)
-    generated_data_curr = sess.run(X_hat, feed_dict={Z: Z_mb, X: ori_data, T: ori_time})
-
-    generated_data = list()
-
-    for i in range(no):
-        temp = generated_data_curr[i, : ori_time[i], :]
-        generated_data.append(temp)
-
-    # Renormalization
-    generated_data = generated_data * max_val
-    generated_data = generated_data + min_val
-
-    # Save
-    saver.save(sess, filename, global_step=version)
-
-    return generated_data
+    if phase == -1:
+        raise RuntimeError(f"train_timegan_timed failed: {info}")
+    if phase != 4:
+        # Unreachable with seconds=inf (the time-budget check can never
+        # trip), but fail loudly rather than silently returning partial
+        # training if that assumption is ever wrong.
+        raise RuntimeError(f"train_timegan_timed did not reach phase 4 (got phase={phase}) despite seconds=inf")
+    return info
 
 
 def train_timegan_timed(
