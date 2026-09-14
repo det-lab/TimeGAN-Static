@@ -1,0 +1,153 @@
+"""Real, short training-run tests against the bundled small datasets
+(timegan/data/stock_data.csv, energy_data.csv) and synthetic data, rather
+than shape-only unit tests.
+
+Why real training, not mocks: this codebase's actual failure modes are
+things like "the graph doesn't build" (wrong arg count, undefined name,
+malformed tf.concat -- all found and fixed in timegan_static.py while
+writing these) or "training silently produces NaN/garbage" -- none of
+which a mocked-out training loop would ever exercise.
+
+Why statistical/structural assertions, not exact golden values: verified
+directly (see report_training_comparison.py and the module docstring
+there) that this TF1 graph-mode code is NOT bit-reproducible in this
+environment even with every seed fixed and execution forced single-
+threaded -- two consecutive runs of the identical script, same seed, same
+config, produced different generated output. An exact-match test would be
+flaky by construction, not a real regression signal. These tests instead
+check what should hold true regardless of that run-to-run noise: shape,
+finiteness, and that values land in the range the network's own
+architecture guarantees (sigmoid-activated outputs, so roughly [0, 1]).
+
+Small/fast by design: tiny hidden_dim, 2 iterations per phase, a handful
+of events. These are meant to run in a couple seconds each, not to
+produce a meaningful trained model.
+"""
+import numpy as np
+import pytest
+import tensorflow as tf
+
+from timegan.data_loading import real_data_loading
+from timegan.timegan import train_timegan as train_timegan_base
+from timegan.timegan import train_timegan_timed
+from timegan.timegan_static import load_timegan as load_timegan_static
+from timegan.timegan_static import train_timegan as train_timegan_static
+
+TINY_PARAMS = dict(hidden_dim=4, num_layer=2, batch_size=8, module="gru")
+# supervisor() builds num_layers - 1 RNN cells -- num_layer=1 would pass an
+# empty cell list to MultiRNNCell and fail with an unrelated-looking error
+# ("Must specify at least one cell"). Found while writing this test; not a
+# bug in these tests' config, a real constraint on the network itself.
+
+
+def _subsample(data_name, seq_len, n_events):
+    """A small, fast slice of a bundled real dataset -- real data loading
+    all the way through the same real_data_loading() any actual caller
+    uses, just fewer events."""
+    data = real_data_loading(data_name, seq_len)
+    return np.asarray(data[:n_events], dtype=np.float32)
+
+
+def _assert_sane_generated_output(generated, expected_shape):
+    generated = np.asarray(generated)
+    assert generated.shape == expected_shape
+    assert np.isfinite(generated).all(), "generated output contains NaN/Inf"
+    # Every output path here ends in a sigmoid-activated layer (recovery()),
+    # so values should land in roughly [0, 1] regardless of run-to-run
+    # noise -- a real bound the architecture guarantees, not a tuned
+    # tolerance.
+    assert generated.min() >= -0.05
+    assert generated.max() <= 1.05
+
+
+def test_train_timegan_timed_on_stock():
+    """The function Traces_GAN (and presumably every other real caller)
+    actually uses."""
+    np.random.seed(0)
+    tf.compat.v1.set_random_seed(0)
+    ori_data = _subsample("stock", seq_len=8, n_events=40)
+
+    phase, info = train_timegan_timed(
+        ori_data, dict(TINY_PARAMS, iterations=2), in_filename="/tmp/test_timed_stock",
+        seconds=120, phase=1, new=True, num_generate=5,
+    )
+
+    assert phase == 4, f"expected all phases to finish within the time budget, got phase {phase}"
+    _assert_sane_generated_output(info, expected_shape=(5, 8, ori_data.shape[-1]))
+
+
+def test_train_timegan_timed_on_energy_smoke():
+    """Different dataset/dimensionality -- lighter check, just confirms
+    the shape/no-NaN properties hold beyond the one dataset above."""
+    np.random.seed(1)
+    tf.compat.v1.set_random_seed(1)
+    ori_data = _subsample("energy", seq_len=8, n_events=40)
+
+    phase, info = train_timegan_timed(
+        ori_data, dict(TINY_PARAMS, iterations=2), in_filename="/tmp/test_timed_energy",
+        seconds=120, phase=1, new=True, num_generate=5,
+    )
+
+    assert phase == 4
+    _assert_sane_generated_output(info, expected_shape=(5, 8, ori_data.shape[-1]))
+
+
+def test_train_timegan_base_smoke():
+    """timegan.py's original (non-timed) train_timegan -- the other half
+    of the duplication pattern flagged alongside timegan_static.py. Not
+    used by Traces_GAN, but same-treatment coverage costs little."""
+    np.random.seed(2)
+    tf.compat.v1.set_random_seed(2)
+    ori_data = _subsample("stock", seq_len=8, n_events=24)
+
+    generated = train_timegan_base(
+        ori_data, dict(TINY_PARAMS, iterations=2), filename="/tmp/test_base_stock",
+    )
+
+    _assert_sane_generated_output(generated, expected_shape=(24, 8, ori_data.shape[-1]))
+
+
+def test_train_timegan_static_on_synthetic():
+    """First real test of timegan_static.py's train_timegan, ever -- this
+    function could not previously be imported (unrelated `utils` package
+    shadowing its intended local import) or called (wrong argument counts
+    throughout; unpack_parameters never updated for the extra static-
+    feature params; a bare undefined `sigmoid`; a typo'd TF method name;
+    malformed tf.concat calls) -- all fixed to get to this point. Static
+    features are genuinely embedded/discriminated (HS/ES/XS_tilde/XS_hat/
+    YS_* below are real graph nodes), but intentionally don't participate
+    in the loss yet -- see train_timegan's docstring.
+
+    Synthetic data, not a bundled dataset: none of the bundled data ships
+    a static-feature column, so this constructs its own small windowed
+    array plus a random per-sequence label (agreed as the stand-in for
+    "real" static features for this first test).
+    """
+    np.random.seed(3)
+    tf.compat.v1.set_random_seed(3)
+    no, seq_len, dim = 32, 6, 3
+    ori_data = np.random.uniform(0, 1, [no, seq_len, dim]).astype(np.float32)
+    ori_data_static = np.random.randint(0, 2, size=(no, 1)).astype(np.float32)
+
+    generated = train_timegan_static(
+        ori_data, ori_data_static, dict(TINY_PARAMS, iterations=2), filename="/tmp/test_static_synth",
+    )
+
+    _assert_sane_generated_output(generated, expected_shape=(no, seq_len, dim))
+
+
+def test_load_timegan_static_round_trip():
+    """train then immediately load the same checkpoint -- confirms
+    load_timegan's identical fix (same bugs, same treatment) actually
+    works, not just train_timegan's."""
+    np.random.seed(4)
+    tf.compat.v1.set_random_seed(4)
+    no, seq_len, dim = 32, 6, 3
+    ori_data = np.random.uniform(0, 1, [no, seq_len, dim]).astype(np.float32)
+    ori_data_static = np.random.randint(0, 2, size=(no, 1)).astype(np.float32)
+    params = dict(TINY_PARAMS, iterations=2)
+
+    train_timegan_static(ori_data, ori_data_static, dict(params), filename="/tmp/test_roundtrip")
+    generated = load_timegan_static(ori_data, ori_data_static, dict(params), filename="/tmp/test_roundtrip-0")
+
+    _assert_sane_generated_output(generated, expected_shape=(no, seq_len, dim))

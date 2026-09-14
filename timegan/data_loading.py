@@ -97,7 +97,14 @@ def real_data_loading(data_name, seq_len):
             importlib.resources.open_binary("timegan.data", "stock_data.csv"), delimiter=",", skiprows=1
         )
     elif data_name == "energy":
-        ori_data = np.loadtxt("data/energy_data.csv", delimiter=",", skiprows=1)
+        # Was a bare relative path ("data/energy_data.csv"), unlike the
+        # stock branch above -- only worked if the caller's cwd happened to
+        # have a data/ subdirectory, which isn't true from the repo root
+        # (the real file lives at timegan/data/energy_data.csv). Fixed to
+        # use the same package-resource loading as stock.
+        ori_data = np.loadtxt(
+            importlib.resources.open_binary("timegan.data", "energy_data.csv"), delimiter=",", skiprows=1
+        )
 
     # Flip the data to make chronological data
     ori_data = ori_data[::-1]
