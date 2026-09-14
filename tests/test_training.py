@@ -4,9 +4,13 @@ than shape-only unit tests.
 
 Why real training, not mocks: this codebase's actual failure modes are
 things like "the graph doesn't build" (wrong arg count, undefined name,
-malformed tf.concat -- all found and fixed in timegan_static.py while
-writing these) or "training silently produces NaN/garbage" -- none of
-which a mocked-out training loop would ever exercise.
+malformed tf.concat -- all found while writing these, when this repo's
+static-feature support lived in a second, entirely separate file,
+timegan_static.py, since deleted and folded into timegan.py's own
+embedder/recovery/generator/discriminator/train_timegan/train_timegan_timed/
+load_timegan as an optional S/ori_data_static parameter) or "training
+silently produces NaN/garbage" -- none of which a mocked-out training loop
+would ever exercise.
 
 Why statistical/structural assertions, not exact golden values: verified
 directly (see report_training_comparison.py and the module docstring
@@ -28,10 +32,9 @@ import pytest
 import tensorflow as tf
 
 from timegan.data_loading import real_data_loading
-from timegan.timegan import train_timegan as train_timegan_base
+from timegan.timegan import load_timegan
+from timegan.timegan import train_timegan
 from timegan.timegan import train_timegan_timed
-from timegan.timegan_static import load_timegan as load_timegan_static
-from timegan.timegan_static import train_timegan as train_timegan_static
 
 TINY_PARAMS = dict(hidden_dim=4, num_layer=2, batch_size=8, module="gru")
 # supervisor() builds num_layers - 1 RNN cells -- num_layer=1 would pass an
@@ -93,33 +96,37 @@ def test_train_timegan_timed_on_energy_smoke():
 
 
 def test_train_timegan_base_smoke():
-    """timegan.py's train_timegan -- now a thin wrapper around
+    """timegan.py's train_timegan -- a thin wrapper around
     train_timegan_timed (was previously a full standalone copy of its
-    graph-building/training-loop code, the same "same fix needs applying
-    twice" risk that let timegan_static.py's copy silently break). Not
-    used by Traces_GAN directly, but this is the test that actually
-    exercises the wrapper end to end."""
+    graph-building/training-loop code -- the same "same fix needs applying
+    in more than one place" risk that let timegan_static.py's copy of this
+    code drift until it no longer even ran). Not used by Traces_GAN
+    directly, but this is the test that actually exercises the wrapper end
+    to end."""
     np.random.seed(2)
     tf.compat.v1.set_random_seed(2)
     ori_data = _subsample("stock", seq_len=8, n_events=24)
 
-    generated = train_timegan_base(
+    generated = train_timegan(
         ori_data, dict(TINY_PARAMS, iterations=2), filename="/tmp/test_base_stock",
     )
 
     _assert_sane_generated_output(generated, expected_shape=(24, 8, ori_data.shape[-1]))
 
 
-def test_train_timegan_static_on_synthetic():
-    """First real test of timegan_static.py's train_timegan, ever -- this
-    function could not previously be imported (unrelated `utils` package
-    shadowing its intended local import) or called (wrong argument counts
-    throughout; unpack_parameters never updated for the extra static-
-    feature params; a bare undefined `sigmoid`; a typo'd TF method name;
-    malformed tf.concat calls) -- all fixed to get to this point. Static
-    features are genuinely embedded/discriminated (HS/ES/XS_tilde/XS_hat/
-    YS_* below are real graph nodes), but intentionally don't participate
-    in the loss yet -- see train_timegan's docstring.
+def test_train_timegan_with_static_features_on_synthetic():
+    """Static-feature support, folded into timegan.py's own train_timegan
+    (via the optional ori_data_static param) from what used to be a
+    second, entirely separate file (timegan_static.py) that could not
+    previously be imported (unrelated `utils` package shadowing its
+    intended local import) or called (wrong argument counts throughout;
+    unpack_parameters never updated for the extra static-feature params; a
+    bare undefined `sigmoid`; a typo'd TF method name; malformed
+    tf.concat calls) -- all fixed, then merged, to get to this point.
+    Static features are genuinely embedded/discriminated (HS/ES/XS_tilde/
+    XS_hat/YS_* in timegan.py's component functions are real graph nodes),
+    but intentionally don't participate in the loss yet -- see
+    train_timegan_timed's docstring.
 
     Synthetic data, not a bundled dataset: none of the bundled data ships
     a static-feature column, so this constructs its own small windowed
@@ -132,16 +139,18 @@ def test_train_timegan_static_on_synthetic():
     ori_data = np.random.uniform(0, 1, [no, seq_len, dim]).astype(np.float32)
     ori_data_static = np.random.randint(0, 2, size=(no, 1)).astype(np.float32)
 
-    generated = train_timegan_static(
-        ori_data, ori_data_static, dict(TINY_PARAMS, iterations=2), filename="/tmp/test_static_synth",
+    generated = train_timegan(
+        ori_data, dict(TINY_PARAMS, iterations=2), filename="/tmp/test_static_synth",
+        ori_data_static=ori_data_static,
     )
 
     _assert_sane_generated_output(generated, expected_shape=(no, seq_len, dim))
 
 
-def test_load_timegan_static_round_trip():
-    """train then immediately load the same checkpoint -- confirms
-    load_timegan's identical fix (same bugs, same treatment) actually
+def test_load_timegan_with_static_features_round_trip():
+    """train then immediately load the same checkpoint, with static
+    features -- confirms load_timegan's identical treatment (same
+    optional ori_data_static param, same two-branch graph wiring) also
     works, not just train_timegan's."""
     np.random.seed(4)
     tf.compat.v1.set_random_seed(4)
@@ -150,7 +159,11 @@ def test_load_timegan_static_round_trip():
     ori_data_static = np.random.randint(0, 2, size=(no, 1)).astype(np.float32)
     params = dict(TINY_PARAMS, iterations=2)
 
-    train_timegan_static(ori_data, ori_data_static, dict(params), filename="/tmp/test_roundtrip")
-    generated = load_timegan_static(ori_data, ori_data_static, dict(params), filename="/tmp/test_roundtrip-0")
+    train_timegan(
+        ori_data, dict(params), filename="/tmp/test_roundtrip", ori_data_static=ori_data_static,
+    )
+    generated = load_timegan(
+        ori_data, dict(params), filename="/tmp/test_roundtrip-0", ori_data_static=ori_data_static,
+    )
 
     _assert_sane_generated_output(generated, expected_shape=(no, seq_len, dim))

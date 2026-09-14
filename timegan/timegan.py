@@ -68,121 +68,86 @@ def unpack_parameters(parameters):
 
 
 # Components of the network
-def embedder(X, T, param):
+def embedder(X, T, param, S=None):
     """Embedding network between original feature space to latent space.
 
     Args:
       - X: input time-series features
       - T: input time information
+      - S: optional per-event static features, shape (batch, static_dim).
+          When given, also embeds them (independently of the temporal
+          branch -- see timegan_static.py's git history, folded into this
+          file, for why: merging a per-timestep tensor with a per-event
+          one needs a broadcast/tiling scheme nothing here has designed).
+          param["static_dim"] must be set when S is given.
 
     Returns:
-      - H: embeddings
-
-    Update:
-        Attempting to update tensorflow v1.x code to v2.x
-        Currently able to do so with e_outputs, but may lose e_last_states along the way
+      - H: embeddings, if S is None (unchanged from before this had any
+        static-feature support -- existing callers are unaffected)
+      - (H, HS): embeddings and static embeddings, if S is given
     """
     hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
     dim = z_dim
     with tf.compat.v1.variable_scope("embedder", reuse=tf.compat.v1.AUTO_REUSE):
-        # e_cell = StackedRNNCells([LSTMCell(hidden_dim) for _ in range(num_layers)])
         e_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
-
-        # print("E cell: " , e_cell, "\nX: ", X)
-
-        # rnn_layer = tf.keras.layers.RNN(e_cell, return_state=True)
-
-        # e_outputs, e_last_states = rnn_layer(X)
-
-        # e_outputs = tf.keras.layers.RNN(e_cell)(X)
-        # e_last_states = X
-
-        # print("e out: " , e_outputs, "\n X ", e_last_states)
-
-        # e_outputs, e_last_states = tf.keras.layers.RNN(e_cell, return_sequences=True, return_state=True)(X)
         e_outputs, e_last_states = tf.compat.v1.nn.dynamic_rnn(e_cell, X, dtype=tf.float32, sequence_length=T)
-
-        # H = tf.keras.layers.Dense(hidden_dim, activation=tf.nn.sigmoid)(e_outputs)
         H = _layers.fully_connected(e_outputs, hidden_dim, activation_fn=tf.nn.sigmoid)
-        print("H: ", H)
-        return H
-
-
-'''
-# Incorperate static features
-def embedder (X, T, S, param):
-    """Embedding network between original feature space to latent space.
-
-    Args:
-      - X: input time-series features
-      - T: input time information
-      - S: static features
-
-    Returns:
-      - HT: time-series embeddings
-      - HS: static embeddings
-    """
-    hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
-    dim = z_dim
-    with tf.compat.v1.variable_scope("embedder", reuse = tf.compat.v1.AUTO_REUSE):
-      print("e_cell") # TEMP
-      e_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
-      print("e_output") # TEMP
-      e_outputs, e_last_states = tf.compat.v1.nn.dynamic_rnn(e_cell, X, dtype=tf.float32, sequence_length = T)
-      # TODO: Implement seperate hiddem dim and num layers for static features
-      HS = _layers.stack(S, _layers.fully_connected, [hidden_dim for _ in range(num_layers)], activation_fn=tf.nn.sigmoid)
-      # TODO, concatinate e_outputs and HS
-      h_inputs = # TODO
-      H = _layers.fully_connected(h_inputs, hidden_dim, activation_fn=tf.nn.sigmoid)
+        if S is None:
+            return H
+        static_dim = param["static_dim"]
+        HS = _layers.stack(
+            S, _layers.fully_connected, [static_dim for _ in range(num_layers)], activation_fn=tf.nn.sigmoid
+        )
     return H, HS
-'''
 
 
-def recovery(H, T, param):
+def recovery(H, T, param, S=None):
     """Recovery network from latent space to original space.
 
     Args:
       - H: latent representation
       - T: input time information
+      - S: optional static-feature latent representation (e.g. HS from
+          embedder(), or ES from generator()) to recover back to raw
+          static-feature space. param["static_dim"] must be set when
+          given.
 
     Returns:
-      - X_tilde: recovered data
+      - X_tilde: recovered data, if S is None (unchanged from before this
+        had any static-feature support)
+      - (X_tilde, XS_tilde): recovered temporal and static data, if S is
+        given
     """
-
     hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
     dim = z_dim
-
-    # print("H shape: ", X.shape)
     with tf.compat.v1.variable_scope("recovery", reuse=tf.compat.v1.AUTO_REUSE):
-        # r_cell = StackedRNNCells([LSTMCell(hidden_dim) for _ in range(num_layers)])
-        # print("hidden_dim: ", hidden_dim, "num_layers: ", num_layers)
-        # print("R cell: ", r_cell)
-        # print("H shape: ", X.shape)
-        # r_outputs = tf.keras.layers.RNN(r_cell)(H)
-        # X_tilde = tf.keras.layers.Dense(dim, activation=tf.nn.sigmoid)(r_outputs)
         r_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
         r_outputs, r_last_states = tf.compat.v1.nn.dynamic_rnn(r_cell, H, dtype=tf.float32, sequence_length=T)
         X_tilde = _layers.fully_connected(r_outputs, dim, activation_fn=tf.nn.sigmoid)
+        if S is None:
+            return X_tilde
+        static_dim = param["static_dim"]
+        rs_outputs = _layers.stack(
+            S, _layers.fully_connected, [static_dim for _ in range(num_layers)], activation_fn=tf.nn.sigmoid
+        )
+        XS_tilde = _layers.fully_connected(rs_outputs, static_dim, activation_fn=tf.nn.sigmoid)
+    return X_tilde, XS_tilde
 
-    return X_tilde
 
-    # hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
-    # dim = z_dim
-    # with tf.compat.v1.variable_scope("recovery", reuse=tf.compat.v1.AUTO_REUSE):
-
-    #
-    # return X_tilde
-
-
-def generator(Z, T, param):
+def generator(Z, T, param, S=None):
     """Generator function: Generate time-series data in latent space.
 
     Args:
       - Z: random variables
       - T: input time information
+      - S: optional per-event random static-noise input, shape
+          (batch, static_dim) -- the static-feature analog of Z.
+          param["static_dim"] must be set when given.
 
     Returns:
-      - E: generated embedding
+      - E: generated embedding, if S is None (unchanged from before this
+        had any static-feature support)
+      - (E, ES): generated temporal and static embeddings, if S is given
     """
     hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
     dim = z_dim
@@ -190,7 +155,13 @@ def generator(Z, T, param):
         e_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
         e_outputs, e_last_states = tf.compat.v1.nn.dynamic_rnn(e_cell, Z, dtype=tf.float32, sequence_length=T)
         E = _layers.fully_connected(e_outputs, hidden_dim, activation_fn=tf.nn.sigmoid)
-    return E
+        if S is None:
+            return E
+        static_dim = param["static_dim"]
+        ES = _layers.stack(
+            S, _layers.fully_connected, [static_dim for _ in range(num_layers)], activation_fn=tf.nn.sigmoid
+        )
+    return E, ES
 
 
 def supervisor(H, T, param):
@@ -214,15 +185,23 @@ def supervisor(H, T, param):
     return S
 
 
-def discriminator(H, T, param):
+def discriminator(H, T, param, S=None):
     """Discriminate the original and synthetic time-series data.
 
     Args:
       - H: latent representation
       - T: input time information
+      - S: optional static-feature latent representation (e.g. HS from
+          embedder(), or ES from generator()) to discriminate real vs.
+          synthetic static features. param["static_dim"] must be set
+          when given.
 
     Returns:
-      - Y_hat: classification results between original and synthetic time-series
+      - Y_hat: classification results between original and synthetic
+        time-series, if S is None (unchanged from before this had any
+        static-feature support)
+      - (Y_hat, YS_hat): temporal and static classification results, if S
+        is given
     """
     hidden_dim, num_layers, iterations, batch_size, module_name, z_dim, gamma = unpack_parameters(param)
     dim = z_dim
@@ -230,10 +209,17 @@ def discriminator(H, T, param):
         d_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell([rnn_cell(module_name, hidden_dim) for _ in range(num_layers)])
         d_outputs, d_last_states = tf.compat.v1.nn.dynamic_rnn(d_cell, H, dtype=tf.float32, sequence_length=T)
         Y_hat = _layers.fully_connected(d_outputs, 1, activation_fn=None)
-    return Y_hat
+        if S is None:
+            return Y_hat
+        static_dim = param["static_dim"]
+        ds_outputs = _layers.stack(
+            S, _layers.fully_connected, [static_dim for _ in range(num_layers)], activation_fn=tf.nn.sigmoid
+        )
+        YS_hat = _layers.fully_connected(ds_outputs, 1, activation_fn=tf.nn.sigmoid)
+    return Y_hat, YS_hat
 
 
-def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
+def train_timegan(ori_data, parameters, filename="timegan_save", version=0, ori_data_static=None):
     """TimeGAN training function -- one-shot, non-resumable convenience
     wrapper around train_timegan_timed().
 
@@ -257,6 +243,8 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
       - parameters: TimeGAN network parameters
       - filename: filename to save the model in, default "timegan_save"
       - version: version of the snapshot, default 0
+      - ori_data_static: optional per-event static features -- see
+          train_timegan_timed's docstring, passed straight through
 
     Returns:
       - generated_data: generated time-series data
@@ -272,6 +260,7 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
     phase, info = train_timegan_timed(
         ori_data, parameters, in_filename=filename, out_filename=filename,
         seconds=float("inf"), phase=1, current_iter=0, new=True, version=version,
+        ori_data_static=ori_data_static,
     )
     if phase == -1:
         raise RuntimeError(f"train_timegan_timed failed: {info}")
@@ -285,7 +274,7 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0):
 
 def train_timegan_timed(
     ori_data, parameters, in_filename, out_filename=None, seconds=3600, phase=1, current_iter=0, new=False, version=0,
-    num_generate=None, on_training_complete=None,
+    num_generate=None, on_training_complete=None, ori_data_static=None,
 ):
     """Trains a TimeGAN model for a specific number of seconds, then stops and saves the session.
 
@@ -348,6 +337,16 @@ def train_timegan_timed(
           training is done (e.g. write its own progress marker) in case generation itself gets
           killed before this function returns -- a resubmit with phase=4 and new=False resumes
           directly at generation using that checkpoint, skipping training entirely.
+      - ori_data_static: optional per-event static features, shape
+          (no, static_dim). When given, static features are genuinely
+          embedded/discriminated (real graph nodes throughout: HS/ES/
+          XS_tilde/XS_hat/YS_* below), but intentionally don't participate
+          in any loss term yet -- training still only optimizes the
+          temporal reconstruction/adversarial objective. Wiring static
+          loss terms in is separate follow-up work (how should they
+          combine with the temporal ones?); this makes the plumbing
+          correct for what it does do, without changing anything about
+          the temporal path when omitted (the default).
 
     Returns:
       A tuple of variable length; the first element of the tuple determines its length and content.
@@ -390,6 +389,7 @@ def train_timegan_timed(
 
     # Basic Parameters
     no, seq_len, dim = np.asarray(ori_data).shape
+    static_dim = np.asarray(ori_data_static).shape[-1] if ori_data_static is not None else None
 
     # Maximum sequence length and each sequence length
     ori_time, max_seq_len = extract_time(ori_data)
@@ -406,6 +406,7 @@ def train_timegan_timed(
     batch_size = parameters["batch_size"]
     module_name = parameters["module"]
     parameters["dim"] = dim
+    parameters["static_dim"] = static_dim
     z_dim = dim
     # setdefault (not a plain local default) so the resolved value -- whether
     # the caller supplied one or this default -- lands back in the caller's
@@ -422,22 +423,74 @@ def train_timegan_timed(
     Z = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, z_dim], name="myinput_z")
     T = tf.compat.v1.placeholder(tf.int32, [None], name="myinput_t")
 
-    # Embedder & Recovery
-    H = embedder(X, T, parameters)
-    X_tilde = recovery(H, T, parameters)
+    # Embedder, Recovery, Generator, Discriminator -- two branches (rather
+    # than always passing S=None and letting each function's own S-is-None
+    # check no-op) because embedder/recovery/generator/discriminator return
+    # a plain value when S is None and a tuple when it's given: forcing the
+    # same code to handle both would mean every line here unpacking a tuple
+    # or not depending on a value only known at runtime. This is the one
+    # place that fork needs to happen, now that it isn't duplicated across
+    # two entire files.
+    if ori_data_static is not None:
+        S = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_s")
+        S_z = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_sz")
 
-    # Generator
-    E_hat = generator(Z, T, parameters)
-    H_hat = supervisor(E_hat, T, parameters)
-    H_hat_supervise = supervisor(H, T, parameters)
+        H, HS = embedder(X, T, parameters, S=S)
+        X_tilde, XS_tilde = recovery(H, T, parameters, S=HS)
 
-    # Synthetic data
-    X_hat = recovery(H_hat, T, parameters)
+        E_hat, ES = generator(Z, T, parameters, S=S_z)
+        H_hat = supervisor(E_hat, T, parameters)
+        H_hat_supervise = supervisor(H, T, parameters)
 
-    # Discriminator
-    Y_fake = discriminator(H_hat, T, parameters)
-    Y_real = discriminator(H, T, parameters)
-    Y_fake_e = discriminator(E_hat, T, parameters)
+        X_hat, XS_hat = recovery(H_hat, T, parameters, S=ES)
+
+        Y_fake, YS_fake = discriminator(H_hat, T, parameters, S=ES)
+        Y_real, YS_real = discriminator(H, T, parameters, S=HS)
+        Y_fake_e, YS_fake_e = discriminator(E_hat, T, parameters, S=ES)
+    else:
+        H = embedder(X, T, parameters)
+        X_tilde = recovery(H, T, parameters)
+
+        E_hat = generator(Z, T, parameters)
+        H_hat = supervisor(E_hat, T, parameters)
+        H_hat_supervise = supervisor(H, T, parameters)
+
+        X_hat = recovery(H_hat, T, parameters)
+
+        Y_fake = discriminator(H_hat, T, parameters)
+        Y_real = discriminator(H, T, parameters)
+        Y_fake_e = discriminator(E_hat, T, parameters)
+
+    def _draw_batch():
+        """batch_generator(), plus a static-feature slice (aligned to the
+        same drawn indices) when ori_data_static was given -- always
+        returns a 3-tuple so every call site below can unpack the same
+        way regardless, with S_mb simply None when there's nothing to
+        slice."""
+        if ori_data_static is not None:
+            return batch_generator(ori_data, ori_time, batch_size, static=ori_data_static)
+        x_mb, t_mb = batch_generator(ori_data, ori_time, batch_size)
+        return x_mb, t_mb, None
+
+    def _draw_static_noise(n):
+        """Sz_mb: the static-feature analog of Z_mb (random_generator) --
+        no time dimension, since static features aren't per-timestep."""
+        if ori_data_static is None:
+            return None
+        return np.random.uniform(0.0, 1, [n, static_dim])
+
+    def _static_extras(s_mb=None, sz_mb=None):
+        """Extra feed_dict entries for S/S_z, or {} when there's nothing
+        static in play -- merge into a feed_dict with **, safe to call
+        unconditionally (only references S/S_z, which only exist as names
+        when ori_data_static was given, if s_mb/sz_mb are actually not
+        None, which only happens in that same case)."""
+        extras = {}
+        if s_mb is not None:
+            extras[S] = s_mb
+        if sz_mb is not None:
+            extras[S_z] = sz_mb
+        return extras
 
     # Variables
     e_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("embedder")]
@@ -513,9 +566,11 @@ def train_timegan_timed(
 
         for itt in range(current_iter, iterations):
             # Set mini-batch
-            X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
+            X_mb, T_mb, S_mb = _draw_batch()
             # Train embedder
-            _, step_e_loss = sess.run([E0_solver, E_loss_T0], feed_dict={X: X_mb, T: T_mb})
+            _, step_e_loss = sess.run(
+                [E0_solver, E_loss_T0], feed_dict={X: X_mb, T: T_mb, **_static_extras(S_mb)}
+            )
 
             if itt % 50 == 0:
                 elapsed = (time_ns() - start_time) / 1e9
@@ -539,11 +594,15 @@ def train_timegan_timed(
 
         for itt in range(current_iter, iterations):
             # Set mini-batch
-            X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
+            X_mb, T_mb, S_mb = _draw_batch()
             # Random vector generation
             Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
+            Sz_mb = _draw_static_noise(batch_size)
             # Train generator
-            _, step_g_loss_s = sess.run([GS_solver, G_loss_S], feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
+            _, step_g_loss_s = sess.run(
+                [GS_solver, G_loss_S],
+                feed_dict={Z: Z_mb, X: X_mb, T: T_mb, **_static_extras(S_mb, Sz_mb)},
+            )
 
             if itt % 50 == 0:
                 elapsed = (time_ns() - start_time) / 1e9
@@ -569,26 +628,37 @@ def train_timegan_timed(
             # Generator training (twice more than discriminator training)
             for kk in range(2):
                 # Set mini-batch
-                X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
+                X_mb, T_mb, S_mb = _draw_batch()
                 # Random vector generation
                 Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
+                Sz_mb = _draw_static_noise(batch_size)
                 # Train generator
                 _, step_g_loss_u, step_g_loss_s, step_g_loss_v = sess.run(
-                    [G_solver, G_loss_U, G_loss_S, G_loss_V], feed_dict={Z: Z_mb, X: X_mb, T: T_mb}
+                    [G_solver, G_loss_U, G_loss_S, G_loss_V],
+                    feed_dict={Z: Z_mb, X: X_mb, T: T_mb, **_static_extras(S_mb, Sz_mb)},
                 )
                 # Train embedder
-                _, step_e_loss_t0 = sess.run([E_solver, E_loss_T0], feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
+                _, step_e_loss_t0 = sess.run(
+                    [E_solver, E_loss_T0],
+                    feed_dict={Z: Z_mb, X: X_mb, T: T_mb, **_static_extras(S_mb, Sz_mb)},
+                )
 
             # Discriminator training
             # Set mini-batch
-            X_mb, T_mb = batch_generator(ori_data, ori_time, batch_size)
+            X_mb, T_mb, S_mb = _draw_batch()
             # Random vector generation
             Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
+            Sz_mb = _draw_static_noise(batch_size)
             # Check discriminator loss before updating
-            check_d_loss = sess.run(D_loss, feed_dict={X: X_mb, T: T_mb, Z: Z_mb})
+            check_d_loss = sess.run(
+                D_loss, feed_dict={X: X_mb, T: T_mb, Z: Z_mb, **_static_extras(S_mb, Sz_mb)}
+            )
             # Train discriminator (only when the discriminator does not work well)
             if check_d_loss > 0.15:
-                _, step_d_loss = sess.run([D_solver, D_loss], feed_dict={X: X_mb, T: T_mb, Z: Z_mb})
+                _, step_d_loss = sess.run(
+                    [D_solver, D_loss],
+                    feed_dict={X: X_mb, T: T_mb, Z: Z_mb, **_static_extras(S_mb, Sz_mb)},
+                )
 
             if itt % 50 == 0:
                 elapsed = (time_ns() - start_time) / 1e9
@@ -604,7 +674,9 @@ def train_timegan_timed(
                 # -- a stable-looking d_loss/g_loss_u is consistent with
                 # both a healthy adversarial game AND a generator that's
                 # settled for reproducing the dominant mode.
-                gen_batch = sess.run(X_hat, feed_dict={Z: Z_mb, X: X_mb, T: T_mb})
+                gen_batch = sess.run(
+                    X_hat, feed_dict={Z: Z_mb, X: X_mb, T: T_mb, **_static_extras(S_mb, Sz_mb)}
+                )
                 real_std = np.std(X_mb, axis=0)
                 gen_std = np.std(gen_batch, axis=0)
                 ratio = gen_std / (real_std + 1e-8)
@@ -676,8 +748,10 @@ def train_timegan_timed(
         T_chunk = gen_time[start:end]
         Z_chunk = random_generator(end - start, z_dim, T_chunk, max_seq_len)
         X_chunk = ori_data[[i % no for i in range(start, end)]]
+        S_chunk = ori_data_static[[i % no for i in range(start, end)]] if ori_data_static is not None else None
+        Sz_chunk = _draw_static_noise(end - start)
         generated_data_curr[start:end] = sess.run(
-            X_hat, feed_dict={Z: Z_chunk, X: X_chunk, T: T_chunk}
+            X_hat, feed_dict={Z: Z_chunk, X: X_chunk, T: T_chunk, **_static_extras(S_chunk, Sz_chunk)}
         )
 
         # Chunks, not individual sequences, so this can't reuse the `itt % 50`
@@ -703,7 +777,7 @@ def train_timegan_timed(
     return (4, generated_data)
 
 
-def load_timegan(ori_data, parameters, filename):
+def load_timegan(ori_data, parameters, filename, ori_data_static=None):
     """TimeGAN function.
 
     Use original data as training set to generater synthetic data (time-series)
@@ -713,6 +787,11 @@ def load_timegan(ori_data, parameters, filename):
       - ori_data: original time-series data
       - parameters: TimeGAN network parameters
       - filename: filename of the snapshot to load
+      - ori_data_static: optional per-event static features, shape
+          (no, static_dim) -- see train_timegan_timed's docstring for what
+          this does and doesn't do. Only matters here insofar as the
+          checkpoint being restored was itself trained with (or without)
+          static features -- pass whatever was used for training.
 
     Returns:
       - generated_data: generated time-series data
@@ -722,6 +801,7 @@ def load_timegan(ori_data, parameters, filename):
 
     # Basic Parameters
     no, seq_len, dim = np.asarray(ori_data).shape
+    static_dim = np.asarray(ori_data_static).shape[-1] if ori_data_static is not None else None
 
     # Maximum sequence length and each sequence length
     ori_time, max_seq_len = extract_time(ori_data)
@@ -738,6 +818,7 @@ def load_timegan(ori_data, parameters, filename):
     batch_size = parameters["batch_size"]
     module_name = parameters["module"]
     parameters["dim"] = dim
+    parameters["static_dim"] = static_dim
     z_dim = dim
     gamma = 1
 
@@ -746,22 +827,39 @@ def load_timegan(ori_data, parameters, filename):
     Z = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, z_dim], name="myinput_z")
     T = tf.compat.v1.placeholder(tf.int32, [None], name="myinput_t")
 
-    # Embedder & Recovery
-    H = embedder(X, T, parameters)
-    X_tilde = recovery(H, T, parameters)
+    # Embedder, Recovery, Generator, Discriminator -- same two-branch
+    # reasoning as train_timegan_timed above: the checkpoint being restored
+    # must have been built with the exact same graph shape it was saved
+    # with, so this needs to match whichever branch actually trained it.
+    if ori_data_static is not None:
+        S = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_s")
+        S_z = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_sz")
 
-    # Generator
-    E_hat = generator(Z, T, parameters)
-    H_hat = supervisor(E_hat, T, parameters)
-    H_hat_supervise = supervisor(H, T, parameters)
+        H, HS = embedder(X, T, parameters, S=S)
+        X_tilde, XS_tilde = recovery(H, T, parameters, S=HS)
 
-    # Synthetic data
-    X_hat = recovery(H_hat, T, parameters)
+        E_hat, ES = generator(Z, T, parameters, S=S_z)
+        H_hat = supervisor(E_hat, T, parameters)
+        H_hat_supervise = supervisor(H, T, parameters)
 
-    # Discriminator
-    Y_fake = discriminator(H_hat, T, parameters)
-    Y_real = discriminator(H, T, parameters)
-    Y_fake_e = discriminator(E_hat, T, parameters)
+        X_hat, XS_hat = recovery(H_hat, T, parameters, S=ES)
+
+        Y_fake, YS_fake = discriminator(H_hat, T, parameters, S=ES)
+        Y_real, YS_real = discriminator(H, T, parameters, S=HS)
+        Y_fake_e, YS_fake_e = discriminator(E_hat, T, parameters, S=ES)
+    else:
+        H = embedder(X, T, parameters)
+        X_tilde = recovery(H, T, parameters)
+
+        E_hat = generator(Z, T, parameters)
+        H_hat = supervisor(E_hat, T, parameters)
+        H_hat_supervise = supervisor(H, T, parameters)
+
+        X_hat = recovery(H_hat, T, parameters)
+
+        Y_fake = discriminator(H_hat, T, parameters)
+        Y_real = discriminator(H, T, parameters)
+        Y_fake_e = discriminator(E_hat, T, parameters)
 
     # Variables
     e_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("embedder")]
@@ -818,7 +916,10 @@ def load_timegan(ori_data, parameters, filename):
 
     # Synthetic data generation
     Z_mb = random_generator(no, z_dim, ori_time, max_seq_len)
-    generated_data_curr = sess.run(X_hat, feed_dict={Z: Z_mb, X: ori_data, T: ori_time})
+    static_extras = {}
+    if ori_data_static is not None:
+        static_extras = {S: ori_data_static, S_z: np.random.uniform(0.0, 1, [no, static_dim])}
+    generated_data_curr = sess.run(X_hat, feed_dict={Z: Z_mb, X: ori_data, T: ori_time, **static_extras})
 
     generated_data = list()
 

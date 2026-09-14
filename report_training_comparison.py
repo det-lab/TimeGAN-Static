@@ -1,6 +1,7 @@
-"""Capture/compare tool for checking whether a code change (e.g. the
-embedder/recovery/generator/discriminator consolidation planned for
-timegan.py + timegan_static.py) altered training behavior.
+"""Capture/compare tool for checking whether a code change (e.g. to
+timegan.py's embedder/recovery/generator/discriminator, now the only
+copy of that logic after folding in timegan_static.py's static-feature
+support and deleting that file) altered training behavior.
 
 Why this exists instead of a golden-value test: verified directly that
 this TF1 graph-mode code is NOT bit-reproducible in this environment even
@@ -26,8 +27,8 @@ own, just presenting numbers for a human to judge:
     python3 report_training_comparison.py compare before after
 
 Tracks generated-output summary statistics (mean/std/min/max), the one
-thing all three training entry points (train_timegan_timed, the base
-train_timegan, and timegan_static's train_timegan) return in common.
+thing train_timegan_timed and train_timegan (with or without
+ori_data_static) all return in common.
 """
 import argparse
 import json
@@ -39,9 +40,8 @@ import numpy as np
 import tensorflow as tf
 
 from timegan.data_loading import real_data_loading
-from timegan.timegan import train_timegan as train_timegan_base
+from timegan.timegan import train_timegan
 from timegan.timegan import train_timegan_timed
-from timegan.timegan_static import train_timegan as train_timegan_static
 
 OUT_DIR = ".training_comparison"
 TINY_PARAMS = dict(hidden_dim=4, num_layer=2, batch_size=8, module="gru", iterations=2)
@@ -78,15 +78,16 @@ def _run_once(fn_name, seed):
             if phase != 4:
                 raise RuntimeError(f"train_timegan_timed didn't finish in one call (phase={phase})")
         else:
-            generated = train_timegan_base(
+            generated = train_timegan(
                 ori_data, dict(TINY_PARAMS), filename=f"/tmp/report_cmp_{fn_name}_{seed}",
             )
     elif fn_name == "static":
         no, seq_len, dim = 32, 6, 3
         ori_data = np.random.uniform(0, 1, [no, seq_len, dim]).astype(np.float32)
         ori_data_static = np.random.randint(0, 2, size=(no, 1)).astype(np.float32)
-        generated = train_timegan_static(
-            ori_data, ori_data_static, dict(TINY_PARAMS), filename=f"/tmp/report_cmp_{fn_name}_{seed}",
+        generated = train_timegan(
+            ori_data, dict(TINY_PARAMS), filename=f"/tmp/report_cmp_{fn_name}_{seed}",
+            ori_data_static=ori_data_static,
         )
     else:
         raise ValueError(f"unknown fn: {fn_name}")
