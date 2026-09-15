@@ -27,14 +27,12 @@ Small/fast by design: tiny hidden_dim, 2 iterations per phase, a handful
 of events. These are meant to run in a couple seconds each, not to
 produce a meaningful trained model.
 """
+
 import numpy as np
-import pytest
 import tensorflow as tf
 
 from timegan.data_loading import real_data_loading
-from timegan.timegan import load_timegan
-from timegan.timegan import train_timegan
-from timegan.timegan import train_timegan_timed
+from timegan.timegan import load_timegan, train_timegan, train_timegan_timed
 
 TINY_PARAMS = dict(hidden_dim=4, num_layer=2, batch_size=8, module="gru")
 # supervisor() builds num_layers - 1 RNN cells -- num_layer=1 would pass an
@@ -63,7 +61,7 @@ def _assert_sane_generated_output(generated, expected_shape):
     assert generated.max() <= 1.05
 
 
-def test_train_timegan_timed_on_stock():
+def test_train_timegan_timed_on_stock(tmp_path):
     """The function Traces_GAN (and presumably every other real caller)
     actually uses."""
     np.random.seed(0)
@@ -71,15 +69,20 @@ def test_train_timegan_timed_on_stock():
     ori_data = _subsample("stock", seq_len=8, n_events=40)
 
     phase, info = train_timegan_timed(
-        ori_data, dict(TINY_PARAMS, iterations=2), in_filename="/tmp/test_timed_stock",
-        seconds=120, phase=1, new=True, num_generate=5,
+        ori_data,
+        dict(TINY_PARAMS, iterations=2),
+        in_filename=str(tmp_path / "test_timed_stock"),
+        seconds=120,
+        phase=1,
+        new=True,
+        num_generate=5,
     )
 
     assert phase == 4, f"expected all phases to finish within the time budget, got phase {phase}"
     _assert_sane_generated_output(info, expected_shape=(5, 8, ori_data.shape[-1]))
 
 
-def test_train_timegan_timed_on_energy_smoke():
+def test_train_timegan_timed_on_energy_smoke(tmp_path):
     """Different dataset/dimensionality -- lighter check, just confirms
     the shape/no-NaN properties hold beyond the one dataset above."""
     np.random.seed(1)
@@ -87,15 +90,20 @@ def test_train_timegan_timed_on_energy_smoke():
     ori_data = _subsample("energy", seq_len=8, n_events=40)
 
     phase, info = train_timegan_timed(
-        ori_data, dict(TINY_PARAMS, iterations=2), in_filename="/tmp/test_timed_energy",
-        seconds=120, phase=1, new=True, num_generate=5,
+        ori_data,
+        dict(TINY_PARAMS, iterations=2),
+        in_filename=str(tmp_path / "test_timed_energy"),
+        seconds=120,
+        phase=1,
+        new=True,
+        num_generate=5,
     )
 
     assert phase == 4
     _assert_sane_generated_output(info, expected_shape=(5, 8, ori_data.shape[-1]))
 
 
-def test_train_timegan_base_smoke():
+def test_train_timegan_base_smoke(tmp_path):
     """timegan.py's train_timegan -- a thin wrapper around
     train_timegan_timed (was previously a full standalone copy of its
     graph-building/training-loop code -- the same "same fix needs applying
@@ -108,13 +116,15 @@ def test_train_timegan_base_smoke():
     ori_data = _subsample("stock", seq_len=8, n_events=24)
 
     generated = train_timegan(
-        ori_data, dict(TINY_PARAMS, iterations=2), filename="/tmp/test_base_stock",
+        ori_data,
+        dict(TINY_PARAMS, iterations=2),
+        filename=str(tmp_path / "test_base_stock"),
     )
 
     _assert_sane_generated_output(generated, expected_shape=(24, 8, ori_data.shape[-1]))
 
 
-def test_train_timegan_with_static_features_on_synthetic():
+def test_train_timegan_with_static_features_on_synthetic(tmp_path):
     """Static-feature support, folded into timegan.py's own train_timegan
     (via the optional ori_data_static param) from what used to be a
     second, entirely separate file (timegan_static.py) that could not
@@ -140,14 +150,16 @@ def test_train_timegan_with_static_features_on_synthetic():
     ori_data_static = np.random.randint(0, 2, size=(no, 1)).astype(np.float32)
 
     generated = train_timegan(
-        ori_data, dict(TINY_PARAMS, iterations=2), filename="/tmp/test_static_synth",
+        ori_data,
+        dict(TINY_PARAMS, iterations=2),
+        filename=str(tmp_path / "test_static_synth"),
         ori_data_static=ori_data_static,
     )
 
     _assert_sane_generated_output(generated, expected_shape=(no, seq_len, dim))
 
 
-def test_load_timegan_with_static_features_round_trip():
+def test_load_timegan_with_static_features_round_trip(tmp_path):
     """train then immediately load the same checkpoint, with static
     features -- confirms load_timegan's identical treatment (same
     optional ori_data_static param, same two-branch graph wiring) also
@@ -160,10 +172,16 @@ def test_load_timegan_with_static_features_round_trip():
     params = dict(TINY_PARAMS, iterations=2)
 
     train_timegan(
-        ori_data, dict(params), filename="/tmp/test_roundtrip", ori_data_static=ori_data_static,
+        ori_data,
+        dict(params),
+        filename=str(tmp_path / "test_roundtrip"),
+        ori_data_static=ori_data_static,
     )
     generated = load_timegan(
-        ori_data, dict(params), filename="/tmp/test_roundtrip-0", ori_data_static=ori_data_static,
+        ori_data,
+        dict(params),
+        filename=str(tmp_path / "test_roundtrip-0"),
+        ori_data_static=ori_data_static,
     )
 
     _assert_sane_generated_output(generated, expected_shape=(no, seq_len, dim))

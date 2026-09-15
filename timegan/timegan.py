@@ -255,17 +255,26 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0, ori_
     filenames, which is why train_timegan_timed stopped using it).
     """
     phase, info = train_timegan_timed(
-        ori_data, parameters, in_filename=filename, out_filename=filename,
-        seconds=float("inf"), phase=1, current_iter=0, new=True, version=version,
+        ori_data,
+        parameters,
+        in_filename=filename,
+        out_filename=filename,
+        seconds=float("inf"),
+        phase=1,
+        current_iter=0,
+        new=True,
+        version=version,
         ori_data_static=ori_data_static,
     )
     if phase == -1:
-        raise RuntimeError(f"train_timegan_timed failed: {info}")
+        raise RuntimeError(f"train_timegan_timed failed: {info}")  # noqa: TRY003
     if phase != 4:
         # Unreachable with seconds=inf (the time-budget check can never
         # trip), but fail loudly rather than silently returning partial
         # training if that assumption is ever wrong.
-        raise RuntimeError(f"train_timegan_timed did not reach phase 4 (got phase={phase}) despite seconds=inf")
+        raise RuntimeError(  # noqa: TRY003
+            f"train_timegan_timed did not reach phase 4 (got phase={phase}) despite seconds=inf"
+        )
     return info
 
 
@@ -384,9 +393,12 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     G_loss_V = G_loss_V1 + G_loss_V2
 
     # 4. Summation
-    G_loss = (G_loss_U + gamma * G_loss_U_e
-              + parameters["g_loss_s_weight"] * tf.sqrt(G_loss_S + 1e-6)
-              + parameters["g_loss_v_weight"] * G_loss_V)
+    G_loss = (
+        G_loss_U
+        + gamma * G_loss_U_e
+        + parameters["g_loss_s_weight"] * tf.sqrt(G_loss_S + 1e-6)
+        + parameters["g_loss_v_weight"] * G_loss_V
+    )
 
     # Embedder network loss
     E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
@@ -401,17 +413,38 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     GS_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss_S, var_list=g_vars + s_vars)
 
     return dict(
-        X=X, Z=Z, T=T, S=S, S_z=S_z, X_hat=X_hat,
-        E0_solver=E0_solver, E_solver=E_solver, D_solver=D_solver,
-        G_solver=G_solver, GS_solver=GS_solver,
-        E_loss_T0=E_loss_T0, G_loss_S=G_loss_S, G_loss_U=G_loss_U,
-        G_loss_V=G_loss_V, D_loss=D_loss,
+        X=X,
+        Z=Z,
+        T=T,
+        S=S,
+        S_z=S_z,
+        X_hat=X_hat,
+        E0_solver=E0_solver,
+        E_solver=E_solver,
+        D_solver=D_solver,
+        G_solver=G_solver,
+        GS_solver=GS_solver,
+        E_loss_T0=E_loss_T0,
+        G_loss_S=G_loss_S,
+        G_loss_U=G_loss_U,
+        G_loss_V=G_loss_V,
+        D_loss=D_loss,
     )
 
 
 def train_timegan_timed(
-    ori_data, parameters, in_filename, out_filename=None, seconds=3600, phase=1, current_iter=0, new=False, version=0,
-    num_generate=None, on_training_complete=None, ori_data_static=None,
+    ori_data,
+    parameters,
+    in_filename,
+    out_filename=None,
+    seconds=3600,
+    phase=1,
+    current_iter=0,
+    new=False,
+    version=0,
+    num_generate=None,
+    on_training_complete=None,
+    ori_data_static=None,
 ):
     """Trains a TimeGAN model for a specific number of seconds, then stops and saves the session.
 
@@ -610,14 +643,13 @@ def train_timegan_timed(
             # Set mini-batch
             X_mb, T_mb, S_mb = _draw_batch()
             # Train embedder
-            _, step_e_loss = sess.run(
-                [E0_solver, E_loss_T0], feed_dict={X: X_mb, T: T_mb, **_static_extras(S_mb)}
-            )
+            _, step_e_loss = sess.run([E0_solver, E_loss_T0], feed_dict={X: X_mb, T: T_mb, **_static_extras(S_mb)})
 
             if itt % 50 == 0:
                 elapsed = (time_ns() - start_time) / 1e9
-                print(f"phase 1 iter {itt}/{iterations} e_loss={step_e_loss:.4f} "
-                      f"elapsed={elapsed:.0f}s", flush=True)
+                print(
+                    f"phase 1 iter {itt}/{iterations} e_loss={step_e_loss:.4f} " f"elapsed={elapsed:.0f}s", flush=True
+                )
                 log_history({"phase": 1, "iter": itt, "elapsed": elapsed, "e_loss": float(step_e_loss)})
 
             # End/suspend training if time is over max
@@ -648,8 +680,10 @@ def train_timegan_timed(
 
             if itt % 50 == 0:
                 elapsed = (time_ns() - start_time) / 1e9
-                print(f"phase 2 iter {itt}/{iterations} g_loss_s={step_g_loss_s:.4f} "
-                      f"elapsed={elapsed:.0f}s", flush=True)
+                print(
+                    f"phase 2 iter {itt}/{iterations} g_loss_s={step_g_loss_s:.4f} " f"elapsed={elapsed:.0f}s",
+                    flush=True,
+                )
                 log_history({"phase": 2, "iter": itt, "elapsed": elapsed, "g_loss_s": float(step_g_loss_s)})
 
             # End/suspend training if time is over max
@@ -692,9 +726,7 @@ def train_timegan_timed(
             Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
             Sz_mb = _draw_static_noise(batch_size)
             # Check discriminator loss before updating
-            check_d_loss = sess.run(
-                D_loss, feed_dict={X: X_mb, T: T_mb, Z: Z_mb, **_static_extras(S_mb, Sz_mb)}
-            )
+            check_d_loss = sess.run(D_loss, feed_dict={X: X_mb, T: T_mb, Z: Z_mb, **_static_extras(S_mb, Sz_mb)})
             # Train discriminator (only when the discriminator does not work well)
             if check_d_loss > 0.15:
                 _, step_d_loss = sess.run(
@@ -704,9 +736,12 @@ def train_timegan_timed(
 
             if itt % 50 == 0:
                 elapsed = (time_ns() - start_time) / 1e9
-                print(f"phase 3 iter {itt}/{iterations} g_loss_u={step_g_loss_u:.4f} "
-                      f"g_loss_s={step_g_loss_s:.4f} g_loss_v={step_g_loss_v:.4f} "
-                      f"d_loss={check_d_loss:.4f} elapsed={elapsed:.0f}s", flush=True)
+                print(
+                    f"phase 3 iter {itt}/{iterations} g_loss_u={step_g_loss_u:.4f} "
+                    f"g_loss_s={step_g_loss_s:.4f} g_loss_v={step_g_loss_v:.4f} "
+                    f"d_loss={check_d_loss:.4f} elapsed={elapsed:.0f}s",
+                    flush=True,
+                )
 
                 # Per-timestep variance check on the same minibatch used for
                 # the discriminator loss above: catches a generator
@@ -716,24 +751,30 @@ def train_timegan_timed(
                 # -- a stable-looking d_loss/g_loss_u is consistent with
                 # both a healthy adversarial game AND a generator that's
                 # settled for reproducing the dominant mode.
-                gen_batch = sess.run(
-                    X_hat, feed_dict={Z: Z_mb, X: X_mb, T: T_mb, **_static_extras(S_mb, Sz_mb)}
-                )
+                gen_batch = sess.run(X_hat, feed_dict={Z: Z_mb, X: X_mb, T: T_mb, **_static_extras(S_mb, Sz_mb)})
                 real_std = np.std(X_mb, axis=0)
                 gen_std = np.std(gen_batch, axis=0)
                 ratio = gen_std / (real_std + 1e-8)
-                print(f"phase 3 iter {itt}/{iterations} variance_check "
-                      f"(generated_std/real_std, per timestep): "
-                      f"mean={ratio.mean():.3f} min={ratio.min():.3f} max={ratio.max():.3f}",
-                      flush=True)
-                log_history({
-                    "phase": 3, "iter": itt, "elapsed": elapsed,
-                    "g_loss_u": float(step_g_loss_u), "g_loss_s": float(step_g_loss_s),
-                    "g_loss_v": float(step_g_loss_v), "d_loss": float(check_d_loss),
-                    "variance_ratio_mean": float(ratio.mean()),
-                    "variance_ratio_min": float(ratio.min()),
-                    "variance_ratio_max": float(ratio.max()),
-                })
+                print(
+                    f"phase 3 iter {itt}/{iterations} variance_check "
+                    f"(generated_std/real_std, per timestep): "
+                    f"mean={ratio.mean():.3f} min={ratio.min():.3f} max={ratio.max():.3f}",
+                    flush=True,
+                )
+                log_history(
+                    {
+                        "phase": 3,
+                        "iter": itt,
+                        "elapsed": elapsed,
+                        "g_loss_u": float(step_g_loss_u),
+                        "g_loss_s": float(step_g_loss_s),
+                        "g_loss_v": float(step_g_loss_v),
+                        "d_loss": float(check_d_loss),
+                        "variance_ratio_mean": float(ratio.mean()),
+                        "variance_ratio_min": float(ratio.min()),
+                        "variance_ratio_max": float(ratio.max()),
+                    }
+                )
 
             # End/suspend training if time is over max
             now = time_ns()
