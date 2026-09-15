@@ -76,9 +76,8 @@ def embedder(X, T, param, S=None):
       - T: input time information
       - S: optional per-event static features, shape (batch, static_dim).
           When given, also embeds them (independently of the temporal
-          branch -- see timegan_static.py's git history, folded into this
-          file, for why: merging a per-timestep tensor with a per-event
-          one needs a broadcast/tiling scheme nothing here has designed).
+          branch: merging a per-timestep tensor with a per-event one
+          needs a broadcast/tiling scheme nothing here has designed).
           param["static_dim"] must be set when S is given.
 
     Returns:

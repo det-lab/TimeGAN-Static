@@ -1,2 +1,2 @@
 #!/bin/sh
-python3 tutorial.py
+python3 tests/tutorial.py

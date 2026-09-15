@@ -20,9 +20,6 @@ dependencies = [
 Repository = "https://github.com/det-lab/TimeGAN-Static"
 Documentation = "https://det-lab.github.io/TimeGAN-Static/"
 
-[project.scripts]
-test = "tests.tutorial:start"
-
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.2.0"
 pytest-cov = "^4.0.0"
