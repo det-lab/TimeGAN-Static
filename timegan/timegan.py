@@ -271,6 +271,146 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0, ori_
     return info
 
 
+def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
+    """Builds the full TimeGAN graph -- placeholders through the loss and
+    optimizer ops -- shared by train_timegan_timed and load_timegan.
+
+    load_timegan needs the loss/optimizer ops too, even though it never
+    trains: purely so its Saver's variable list matches what was
+    checkpointed (AdamOptimizer creates slot variables that get saved
+    alongside the trainable ones -- a Saver built from a graph missing
+    them can't restore a checkpoint that has them). Previously this whole
+    function's worth of code was duplicated between the two callers,
+    including the loss weights -- load_timegan's copy had drifted to
+    hardcoded gamma=1/100x weights while train_timegan_timed's own copy
+    had since gained the configurable gamma/g_loss_s_weight/g_loss_v_weight
+    (harmless in practice, since load_timegan never executes those loss
+    ops, but a real, easy-to-miss inconsistency sitting right next to the
+    configurable version).
+
+    Args:
+      - parameters: network parameters. gamma/g_loss_s_weight/
+          g_loss_v_weight defaults are applied here via setdefault, so
+          they land back in the caller's own dict the same way
+          parameters["dim"] does elsewhere.
+      - max_seq_len, dim: from extract_time(ori_data)/ori_data.shape
+      - static_dim: static-feature width, or None for no static support
+
+    Returns a dict with everything a caller might need to feed/run:
+      X, Z, T, S, S_z (placeholders; S/S_z are None if static_dim is
+      None), X_hat, E0_solver, E_solver, D_solver, G_solver, GS_solver,
+      E_loss_T0, G_loss_S, G_loss_U, G_loss_V, D_loss.
+    """
+    hidden_dim = parameters["hidden_dim"]
+    num_layers = parameters["num_layer"]
+    module_name = parameters["module"]
+    z_dim = dim
+    parameters.setdefault("gamma", 1)
+    parameters.setdefault("g_loss_s_weight", 100.0)
+    parameters.setdefault("g_loss_v_weight", 100.0)
+    gamma = parameters["gamma"]
+
+    # Input place holders
+    X = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, dim], name="myinput_x")
+    Z = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, z_dim], name="myinput_z")
+    T = tf.compat.v1.placeholder(tf.int32, [None], name="myinput_t")
+
+    # Embedder, Recovery, Generator, Discriminator -- two branches (rather
+    # than always passing S=None and letting each function's own S-is-None
+    # check no-op) because embedder/recovery/generator/discriminator return
+    # a plain value when S is None and a tuple when it's given: forcing the
+    # same code to handle both would mean every line here unpacking a tuple
+    # or not depending on a value only known at runtime.
+    S = S_z = None
+    if static_dim is not None:
+        S = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_s")
+        S_z = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_sz")
+
+        H, HS = embedder(X, T, parameters, S=S)
+        X_tilde, XS_tilde = recovery(H, T, parameters, S=HS)
+
+        E_hat, ES = generator(Z, T, parameters, S=S_z)
+        H_hat = supervisor(E_hat, T, parameters)
+        H_hat_supervise = supervisor(H, T, parameters)
+
+        X_hat, XS_hat = recovery(H_hat, T, parameters, S=ES)
+
+        Y_fake, YS_fake = discriminator(H_hat, T, parameters, S=ES)
+        Y_real, YS_real = discriminator(H, T, parameters, S=HS)
+        Y_fake_e, YS_fake_e = discriminator(E_hat, T, parameters, S=ES)
+    else:
+        H = embedder(X, T, parameters)
+        X_tilde = recovery(H, T, parameters)
+
+        E_hat = generator(Z, T, parameters)
+        H_hat = supervisor(E_hat, T, parameters)
+        H_hat_supervise = supervisor(H, T, parameters)
+
+        X_hat = recovery(H_hat, T, parameters)
+
+        Y_fake = discriminator(H_hat, T, parameters)
+        Y_real = discriminator(H, T, parameters)
+        Y_fake_e = discriminator(E_hat, T, parameters)
+
+    # Variables
+    e_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("embedder")]
+    r_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("recovery")]
+    g_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("generator")]
+    s_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("supervisor")]
+    d_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("discriminator")]
+
+    # Discriminator loss
+    D_loss_real = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_real), Y_real)
+    D_loss_fake = tf.compat.v1.losses.sigmoid_cross_entropy(tf.zeros_like(Y_fake), Y_fake)
+    D_loss_fake_e = tf.compat.v1.losses.sigmoid_cross_entropy(tf.zeros_like(Y_fake_e), Y_fake_e)
+    D_loss = D_loss_real + D_loss_fake + gamma * D_loss_fake_e
+
+    # Generator loss
+    # 1. Adversarial loss
+    G_loss_U = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_fake), Y_fake)
+    G_loss_U_e = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_fake_e), Y_fake_e)
+
+    # 2. Supervised loss
+    G_loss_S = tf.compat.v1.losses.mean_squared_error(H[:, 1:, :], H_hat_supervise[:, :-1, :])
+
+    # 3. Two Momments
+    G_loss_V1 = tf.reduce_mean(
+        input_tensor=tf.abs(
+            tf.sqrt(tf.nn.moments(x=X_hat, axes=[0])[1] + 1e-6) - tf.sqrt(tf.nn.moments(x=X, axes=[0])[1] + 1e-6)
+        )
+    )
+    G_loss_V2 = tf.reduce_mean(
+        input_tensor=tf.abs((tf.nn.moments(x=X_hat, axes=[0])[0]) - (tf.nn.moments(x=X, axes=[0])[0]))
+    )
+
+    G_loss_V = G_loss_V1 + G_loss_V2
+
+    # 4. Summation
+    G_loss = (G_loss_U + gamma * G_loss_U_e
+              + parameters["g_loss_s_weight"] * tf.sqrt(G_loss_S + 1e-6)
+              + parameters["g_loss_v_weight"] * G_loss_V)
+
+    # Embedder network loss
+    E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
+    E_loss0 = 10 * tf.sqrt(E_loss_T0 + 1e-6)
+    E_loss = E_loss0 + 0.1 * G_loss_S
+
+    # optimizer
+    E0_solver = tf.compat.v1.train.AdamOptimizer().minimize(E_loss0, var_list=e_vars + r_vars)
+    E_solver = tf.compat.v1.train.AdamOptimizer().minimize(E_loss, var_list=e_vars + r_vars)
+    D_solver = tf.compat.v1.train.AdamOptimizer().minimize(D_loss, var_list=d_vars)
+    G_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss, var_list=g_vars + s_vars)
+    GS_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss_S, var_list=g_vars + s_vars)
+
+    return dict(
+        X=X, Z=Z, T=T, S=S, S_z=S_z, X_hat=X_hat,
+        E0_solver=E0_solver, E_solver=E_solver, D_solver=D_solver,
+        G_solver=G_solver, GS_solver=GS_solver,
+        E_loss_T0=E_loss_T0, G_loss_S=G_loss_S, G_loss_U=G_loss_U,
+        G_loss_V=G_loss_V, D_loss=D_loss,
+    )
+
+
 def train_timegan_timed(
     ori_data, parameters, in_filename, out_filename=None, seconds=3600, phase=1, current_iter=0, new=False, version=0,
     num_generate=None, on_training_complete=None, ori_data_static=None,
@@ -398,67 +538,22 @@ def train_timegan_timed(
 
     ## Build a RNN networks
 
-    # Network Parameters
-    hidden_dim = parameters["hidden_dim"]
-    num_layers = parameters["num_layer"]
+    # Network Parameters -- just what this function's own training loop
+    # needs directly; _build_timegan_graph reads hidden_dim/num_layer/
+    # module/gamma/etc. itself from the same parameters dict.
     iterations = parameters["iterations"]
     batch_size = parameters["batch_size"]
-    module_name = parameters["module"]
     parameters["dim"] = dim
     parameters["static_dim"] = static_dim
-    z_dim = dim
-    # setdefault (not a plain local default) so the resolved value -- whether
-    # the caller supplied one or this default -- lands back in the caller's
-    # own parameters dict, the same way `parameters["dim"] = dim` above does.
-    # Callers that log/persist their parameters dict (e.g. into a run's
-    # metadata) get these recorded automatically, with no extra plumbing.
-    parameters.setdefault("gamma", 1)
-    parameters.setdefault("g_loss_s_weight", 100.0)
-    parameters.setdefault("g_loss_v_weight", 100.0)
-    gamma = parameters["gamma"]
+    z_dim = dim  # still used below for random_generator() calls
 
-    # Input place holders
-    X = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, dim], name="myinput_x")
-    Z = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, z_dim], name="myinput_z")
-    T = tf.compat.v1.placeholder(tf.int32, [None], name="myinput_t")
-
-    # Embedder, Recovery, Generator, Discriminator -- two branches (rather
-    # than always passing S=None and letting each function's own S-is-None
-    # check no-op) because embedder/recovery/generator/discriminator return
-    # a plain value when S is None and a tuple when it's given: forcing the
-    # same code to handle both would mean every line here unpacking a tuple
-    # or not depending on a value only known at runtime. This is the one
-    # place that fork needs to happen, now that it isn't duplicated across
-    # two entire files.
-    if ori_data_static is not None:
-        S = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_s")
-        S_z = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_sz")
-
-        H, HS = embedder(X, T, parameters, S=S)
-        X_tilde, XS_tilde = recovery(H, T, parameters, S=HS)
-
-        E_hat, ES = generator(Z, T, parameters, S=S_z)
-        H_hat = supervisor(E_hat, T, parameters)
-        H_hat_supervise = supervisor(H, T, parameters)
-
-        X_hat, XS_hat = recovery(H_hat, T, parameters, S=ES)
-
-        Y_fake, YS_fake = discriminator(H_hat, T, parameters, S=ES)
-        Y_real, YS_real = discriminator(H, T, parameters, S=HS)
-        Y_fake_e, YS_fake_e = discriminator(E_hat, T, parameters, S=ES)
-    else:
-        H = embedder(X, T, parameters)
-        X_tilde = recovery(H, T, parameters)
-
-        E_hat = generator(Z, T, parameters)
-        H_hat = supervisor(E_hat, T, parameters)
-        H_hat_supervise = supervisor(H, T, parameters)
-
-        X_hat = recovery(H_hat, T, parameters)
-
-        Y_fake = discriminator(H_hat, T, parameters)
-        Y_real = discriminator(H, T, parameters)
-        Y_fake_e = discriminator(E_hat, T, parameters)
+    graph = _build_timegan_graph(parameters, max_seq_len, dim, static_dim)
+    X, Z, T, S, S_z = graph["X"], graph["Z"], graph["T"], graph["S"], graph["S_z"]
+    X_hat = graph["X_hat"]
+    E0_solver, E_solver = graph["E0_solver"], graph["E_solver"]
+    D_solver, G_solver, GS_solver = graph["D_solver"], graph["G_solver"], graph["GS_solver"]
+    E_loss_T0, G_loss_S = graph["E_loss_T0"], graph["G_loss_S"]
+    G_loss_U, G_loss_V, D_loss = graph["G_loss_U"], graph["G_loss_V"], graph["D_loss"]
 
     def _draw_batch():
         """batch_generator(), plus a static-feature slice (aligned to the
@@ -490,56 +585,6 @@ def train_timegan_timed(
         if sz_mb is not None:
             extras[S_z] = sz_mb
         return extras
-
-    # Variables
-    e_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("embedder")]
-    r_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("recovery")]
-    g_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("generator")]
-    s_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("supervisor")]
-    d_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("discriminator")]
-
-    # Discriminator loss
-    D_loss_real = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_real), Y_real)
-    D_loss_fake = tf.compat.v1.losses.sigmoid_cross_entropy(tf.zeros_like(Y_fake), Y_fake)
-    D_loss_fake_e = tf.compat.v1.losses.sigmoid_cross_entropy(tf.zeros_like(Y_fake_e), Y_fake_e)
-    D_loss = D_loss_real + D_loss_fake + gamma * D_loss_fake_e
-
-    # Generator loss
-    # 1. Adversarial loss
-    G_loss_U = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_fake), Y_fake)
-    G_loss_U_e = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_fake_e), Y_fake_e)
-
-    # 2. Supervised loss
-    G_loss_S = tf.compat.v1.losses.mean_squared_error(H[:, 1:, :], H_hat_supervise[:, :-1, :])
-
-    # 3. Two Momments
-    G_loss_V1 = tf.reduce_mean(
-        input_tensor=tf.abs(
-            tf.sqrt(tf.nn.moments(x=X_hat, axes=[0])[1] + 1e-6) - tf.sqrt(tf.nn.moments(x=X, axes=[0])[1] + 1e-6)
-        )
-    )
-    G_loss_V2 = tf.reduce_mean(
-        input_tensor=tf.abs((tf.nn.moments(x=X_hat, axes=[0])[0]) - (tf.nn.moments(x=X, axes=[0])[0]))
-    )
-
-    G_loss_V = G_loss_V1 + G_loss_V2
-
-    # 4. Summation
-    G_loss = (G_loss_U + gamma * G_loss_U_e
-              + parameters["g_loss_s_weight"] * tf.sqrt(G_loss_S + 1e-6)
-              + parameters["g_loss_v_weight"] * G_loss_V)
-
-    # Embedder network loss
-    E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
-    E_loss0 = 10 * tf.sqrt(E_loss_T0 + 1e-6)
-    E_loss = E_loss0 + 0.1 * G_loss_S
-
-    # optimizer
-    E0_solver = tf.compat.v1.train.AdamOptimizer().minimize(E_loss0, var_list=e_vars + r_vars)
-    E_solver = tf.compat.v1.train.AdamOptimizer().minimize(E_loss, var_list=e_vars + r_vars)
-    D_solver = tf.compat.v1.train.AdamOptimizer().minimize(D_loss, var_list=d_vars)
-    G_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss, var_list=g_vars + s_vars)
-    GS_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss_S, var_list=g_vars + s_vars)
 
     ## TimeGAN training
     sess = tf.compat.v1.Session()
@@ -809,104 +854,18 @@ def load_timegan(ori_data, parameters, filename, ori_data_static=None):
     ori_data, min_val, max_val = MinMaxScaler(ori_data)
 
     ## Build a RNN networks
-
-    # Network Parameters
-    hidden_dim = parameters["hidden_dim"]
-    num_layers = parameters["num_layer"]
-    iterations = parameters["iterations"]
-    batch_size = parameters["batch_size"]
-    module_name = parameters["module"]
     parameters["dim"] = dim
     parameters["static_dim"] = static_dim
-    z_dim = dim
-    gamma = 1
+    z_dim = dim  # still used below for random_generator()
 
-    # Input place holders
-    X = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, dim], name="myinput_x")
-    Z = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, z_dim], name="myinput_z")
-    T = tf.compat.v1.placeholder(tf.int32, [None], name="myinput_t")
-
-    # Embedder, Recovery, Generator, Discriminator -- same two-branch
-    # reasoning as train_timegan_timed above: the checkpoint being restored
-    # must have been built with the exact same graph shape it was saved
-    # with, so this needs to match whichever branch actually trained it.
-    if ori_data_static is not None:
-        S = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_s")
-        S_z = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_sz")
-
-        H, HS = embedder(X, T, parameters, S=S)
-        X_tilde, XS_tilde = recovery(H, T, parameters, S=HS)
-
-        E_hat, ES = generator(Z, T, parameters, S=S_z)
-        H_hat = supervisor(E_hat, T, parameters)
-        H_hat_supervise = supervisor(H, T, parameters)
-
-        X_hat, XS_hat = recovery(H_hat, T, parameters, S=ES)
-
-        Y_fake, YS_fake = discriminator(H_hat, T, parameters, S=ES)
-        Y_real, YS_real = discriminator(H, T, parameters, S=HS)
-        Y_fake_e, YS_fake_e = discriminator(E_hat, T, parameters, S=ES)
-    else:
-        H = embedder(X, T, parameters)
-        X_tilde = recovery(H, T, parameters)
-
-        E_hat = generator(Z, T, parameters)
-        H_hat = supervisor(E_hat, T, parameters)
-        H_hat_supervise = supervisor(H, T, parameters)
-
-        X_hat = recovery(H_hat, T, parameters)
-
-        Y_fake = discriminator(H_hat, T, parameters)
-        Y_real = discriminator(H, T, parameters)
-        Y_fake_e = discriminator(E_hat, T, parameters)
-
-    # Variables
-    e_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("embedder")]
-    r_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("recovery")]
-    g_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("generator")]
-    s_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("supervisor")]
-    d_vars = [v for v in tf.compat.v1.trainable_variables() if v.name.startswith("discriminator")]
-
-    # Discriminator loss
-    D_loss_real = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_real), Y_real)
-    D_loss_fake = tf.compat.v1.losses.sigmoid_cross_entropy(tf.zeros_like(Y_fake), Y_fake)
-    D_loss_fake_e = tf.compat.v1.losses.sigmoid_cross_entropy(tf.zeros_like(Y_fake_e), Y_fake_e)
-    D_loss = D_loss_real + D_loss_fake + gamma * D_loss_fake_e
-
-    # Generator loss
-    # 1. Adversarial loss
-    G_loss_U = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_fake), Y_fake)
-    G_loss_U_e = tf.compat.v1.losses.sigmoid_cross_entropy(tf.ones_like(Y_fake_e), Y_fake_e)
-
-    # 2. Supervised loss
-    G_loss_S = tf.compat.v1.losses.mean_squared_error(H[:, 1:, :], H_hat_supervise[:, :-1, :])
-
-    # 3. Two Momments
-    G_loss_V1 = tf.reduce_mean(
-        input_tensor=tf.abs(
-            tf.sqrt(tf.nn.moments(x=X_hat, axes=[0])[1] + 1e-6) - tf.sqrt(tf.nn.moments(x=X, axes=[0])[1] + 1e-6)
-        )
-    )
-    G_loss_V2 = tf.reduce_mean(
-        input_tensor=tf.abs((tf.nn.moments(x=X_hat, axes=[0])[0]) - (tf.nn.moments(x=X, axes=[0])[0]))
-    )
-
-    G_loss_V = G_loss_V1 + G_loss_V2
-
-    # 4. Summation
-    G_loss = G_loss_U + gamma * G_loss_U_e + 100 * tf.sqrt(G_loss_S + 1e-6) + 100 * G_loss_V
-
-    # Embedder network loss
-    E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
-    E_loss0 = 10 * tf.sqrt(E_loss_T0 + 1e-6)
-    E_loss = E_loss0 + 0.1 * G_loss_S
-
-    # optimizer
-    E0_solver = tf.compat.v1.train.AdamOptimizer().minimize(E_loss0, var_list=e_vars + r_vars)
-    E_solver = tf.compat.v1.train.AdamOptimizer().minimize(E_loss, var_list=e_vars + r_vars)
-    D_solver = tf.compat.v1.train.AdamOptimizer().minimize(D_loss, var_list=d_vars)
-    G_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss, var_list=g_vars + s_vars)
-    GS_solver = tf.compat.v1.train.AdamOptimizer().minimize(G_loss_S, var_list=g_vars + s_vars)
+    # Same graph-building as train_timegan_timed (shared via
+    # _build_timegan_graph): the checkpoint being restored must have been
+    # built with the exact same graph shape it was saved with, so this
+    # needs to match whichever branch (static features or not) actually
+    # trained it -- pass the same ori_data_static that run used.
+    graph = _build_timegan_graph(parameters, max_seq_len, dim, static_dim)
+    X, Z, T, S, S_z = graph["X"], graph["Z"], graph["T"], graph["S"], graph["S_z"]
+    X_hat = graph["X_hat"]
 
     # Load snapshot
     sess = tf.compat.v1.Session()
