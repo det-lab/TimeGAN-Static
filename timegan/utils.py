@@ -125,17 +125,21 @@ def random_generator(batch_size, z_dim, T_mb, max_seq_len):
     return Z_mb
 
 
-def batch_generator(data, time, batch_size):
+def batch_generator(data, time, batch_size, static=None):
     """Mini-batch generator.
 
     Args:
       - data: time-series data
       - time: time information
       - batch_size: the number of samples in each batch
+      - static: optional per-event static features, sliced by the same
+          batch indices as data/time so a caller can keep them aligned.
+          Backward compatible: omitting it returns the original 2-tuple.
 
     Returns:
       - X_mb: time-series data in each batch
       - T_mb: time information in each batch
+      - S_mb: static features in each batch (only if `static` was given)
     """
     no = len(data)
     idx = np.random.permutation(no)
@@ -143,5 +147,7 @@ def batch_generator(data, time, batch_size):
 
     X_mb = list(data[i] for i in train_idx)
     T_mb = list(time[i] for i in train_idx)
-
-    return X_mb, T_mb
+    if static is None:
+        return X_mb, T_mb
+    S_mb = list(static[i] for i in train_idx)
+    return X_mb, T_mb, S_mb

@@ -80,7 +80,7 @@ def main(args):
     parameters["iterations"] = args.iteration
     parameters["batch_size"] = args.batch_size
 
-    generated_data = timegan(ori_data, parameters)
+    generated_data = timegan.train_timegan(ori_data, parameters)
     print("Finish Synthetic Data Generation")
 
     ## Performance metrics

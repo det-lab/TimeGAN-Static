@@ -1,41 +1,45 @@
-## Necessary packages
+"""Fast demo run -- trains a real (small) TimeGAN model on the bundled
+stock dataset. Not a pytest test (see tests/test_training.py for those);
+run directly with `python3 tests/tutorial.py`.
+
+Guarded behind `if __name__ == "__main__"` so importing this module (e.g.
+pytest's `--doctest-modules` collection, which imports every .py under
+`tests/` to scan for doctests) doesn't accidentally kick off a real
+training run as a side effect -- confirmed this was happening before the
+guard was added: `pytest --doctest-modules tests` hung importing this
+file, since its logic used to run unconditionally at module level.
+"""
 
 import warnings
 
-# 1. TimeGAN model
 from timegan import timegan
-
-# 2. Data loading
 from timegan.data_loading import real_data_loading, sine_data_generation
 
-# 3. Metrics
-warnings.filterwarnings("ignore")
 
-## Data loading
-data_name = "stock"
-seq_len = 24
+def main():
+    warnings.filterwarnings("ignore")
 
-if data_name in ["stock", "energy"]:
-    ori_data = real_data_loading(data_name, seq_len)
-elif data_name == "sine":
-    # Set number of samples and its dimensions
-    no, dim = 100, 5
-    ori_data = sine_data_generation(no, seq_len, dim)
+    data_name = "stock"
+    seq_len = 24
 
-print(data_name + " dataset is ready.")
-## Newtork parameters
-parameters = dict()
+    if data_name in ["stock", "energy"]:
+        ori_data = real_data_loading(data_name, seq_len)
+    elif data_name == "sine":
+        no, dim = 100, 5
+        ori_data = sine_data_generation(no, seq_len, dim)
 
-parameters["module"] = "gru"
-parameters["hidden_dim"] = 24
-parameters["num_layer"] = 3
-parameters["iterations"] = 100
-parameters["batch_size"] = 128
+    print(data_name + " dataset is ready.")
 
+    parameters = dict()
+    parameters["module"] = "gru"
+    parameters["hidden_dim"] = 24
+    parameters["num_layer"] = 3
+    parameters["iterations"] = 100
+    parameters["batch_size"] = 128
 
-# Run TimeGAN
-generated_data = timegan.train_timegan(ori_data, parameters)
-# timed_training = timegan.train_timegan_timed(ori_data, parameters, filename="timegan_save", seconds=60, phase=1, current_iter=0)
+    timegan.train_timegan(ori_data, parameters)
+    print("Finish Synthetic Data Generation")
 
 
-print("Finish Synthetic Data Generation")
+if __name__ == "__main__":
+    main()
