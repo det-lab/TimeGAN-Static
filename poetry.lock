@@ -2328,17 +2328,6 @@ socks = ["pysocks (>=1.5.6,!=1.5.7,<2.0)"]
 zstd = ["zstandard (>=0.18.0)"]
 
 [[package]]
-name = "utils"
-version = "1.0.2"
-description = "A grab-bag of utility functions and objects"
-optional = false
-python-versions = ">=3.6"
-groups = ["main"]
-files = [
-    {file = "utils-1.0.2.tar.gz", hash = "sha256:f4d5157e27e9d434006b5b52a1ec951a34e53e7ecaa145d43a153ec452eb5d9e"},
-]
-
-[[package]]
 name = "virtualenv"
 version = "20.26.2"
 description = "Virtual Python Environment builder"
@@ -2520,4 +2509,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.11"
-content-hash = "cf1e4c030b7638328fc02d45358ccbfb185204113f7b5cb464400d32108321ac"
+content-hash = "80eb24555fb0eeb69336d3a1be74252f1c469b47ebbfd6eddda4611cf04f4fb8"

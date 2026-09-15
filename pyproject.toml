@@ -10,7 +10,6 @@ authors = [
 dependencies = [
     "tensorflow==2.11.0",
     "numpy==1.26.4",
-    "utils",
     "scikit-learn>=1.4.2,<2.0.0",
     "matplotlib>=3.1.1,<4.0.0",
     "tf-slim",
