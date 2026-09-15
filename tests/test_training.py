@@ -103,6 +103,36 @@ def test_train_timegan_timed_on_energy_smoke(tmp_path):
     _assert_sane_generated_output(info, expected_shape=(5, 8, ori_data.shape[-1]))
 
 
+def test_train_timegan_timed_with_noise_injection(tmp_path):
+    """inject_noise=True: exercises _extract_noise_bank actually finding
+    real pulse-free rows and _build_timegan_graph's re-embedding path.
+    Synthetic data with a deliberate mix of flat (pulse-free) and spiky
+    rows -- inject_noise needs SOME pulse-free rows to build a noise bank
+    from, which isn't guaranteed for the bundled stock/energy datasets."""
+    np.random.seed(5)
+    tf.compat.v1.set_random_seed(5)
+    no, seq_len, dim = 40, 8, 1
+    rng = np.random.default_rng(5)
+    ori_data = (0.5 + 0.01 * rng.standard_normal((no, seq_len, dim))).astype(np.float32)
+    # Every other row gets a real spike, so the rest are genuinely
+    # pulse-free -- exactly what _extract_noise_bank looks for.
+    for i in range(0, no, 2):
+        ori_data[i, seq_len // 2, 0] = 1.0
+
+    phase, info = train_timegan_timed(
+        ori_data,
+        dict(TINY_PARAMS, iterations=2, inject_noise=True),
+        in_filename=str(tmp_path / "test_timed_noise_injection"),
+        seconds=120,
+        phase=1,
+        new=True,
+        num_generate=5,
+    )
+
+    assert phase == 4, f"expected all phases to finish within the time budget, got phase {phase}"
+    _assert_sane_generated_output(info, expected_shape=(5, seq_len, dim))
+
+
 def test_train_timegan_base_smoke(tmp_path):
     """timegan.py's train_timegan -- a thin wrapper around
     train_timegan_timed (was previously a full standalone copy of its

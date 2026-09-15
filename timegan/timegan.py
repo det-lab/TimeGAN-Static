@@ -304,8 +304,9 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
       - static_dim: static-feature width, or None for no static support
 
     Returns a dict with everything a caller might need to feed/run:
-      X, Z, T, S, S_z (placeholders; S/S_z are None if static_dim is
-      None), X_hat, E0_solver, E_solver, D_solver, G_solver, GS_solver,
+      X, Z, T, S, S_z, Noise (placeholders; S/S_z are None if static_dim
+      is None, Noise is None unless parameters["inject_noise"] is set),
+      X_hat, E0_solver, E_solver, D_solver, G_solver, GS_solver,
       E_loss_T0, G_loss_S, G_loss_U, G_loss_V, D_loss.
     """
     hidden_dim = parameters["hidden_dim"]
@@ -315,6 +316,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     parameters.setdefault("gamma", 1)
     parameters.setdefault("g_loss_s_weight", 100.0)
     parameters.setdefault("g_loss_v_weight", 100.0)
+    parameters.setdefault("inject_noise", False)
     gamma = parameters["gamma"]
 
     # Input place holders
@@ -328,7 +330,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     # a plain value when S is None and a tuple when it's given: forcing the
     # same code to handle both would mean every line here unpacking a tuple
     # or not depending on a value only known at runtime.
-    S = S_z = None
+    S = S_z = Noise = None
     if static_dim is not None:
         S = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_s")
         S_z = tf.compat.v1.placeholder(tf.float32, [None, static_dim], name="myinput_sz")
@@ -341,6 +343,10 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
         H_hat_supervise = supervisor(H, T, parameters)
 
         X_hat, XS_hat = recovery(H_hat, T, parameters, S=ES)
+        # Noise injection (see below) isn't wired up for the static-feature
+        # branch -- no current caller needs it there, and it would double
+        # this function's complexity for an unused case.
+        X_hat_for_loss = X_hat
 
         Y_fake, YS_fake = discriminator(H_hat, T, parameters, S=ES)
         Y_real, YS_real = discriminator(H, T, parameters, S=HS)
@@ -354,8 +360,28 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
         H_hat_supervise = supervisor(H, T, parameters)
 
         X_hat = recovery(H_hat, T, parameters)
+        X_hat_for_loss = X_hat
+        H_hat_for_disc = H_hat
+        if parameters["inject_noise"]:
+            # The discriminator judges H_hat (embedding space), never the
+            # recovered X_hat directly -- adding noise only to X_hat
+            # wouldn't touch what actually drives G_loss_U, since nothing
+            # downstream would see it. So: add a real, sampled noise
+            # segment to X_hat (Noise is fed by the caller -- see
+            # train_timegan_timed's noise bank, built from genuinely
+            # pulse-free real events, pooled the same way real training
+            # data is), then re-embed the result and let THAT stand in
+            # for H_hat wherever the discriminator or moment-matching
+            # loss look at the generator's output. Reuses the embedder's
+            # existing trained weights (AUTO_REUSE) rather than a second,
+            # untrained copy. The point: the generator's own weights are
+            # only ever judged on pulse shape, not on faking noise
+            # texture, since real noise is what actually gets judged.
+            Noise = tf.compat.v1.placeholder(tf.float32, [None, max_seq_len, dim], name="myinput_noise")
+            X_hat_for_loss = X_hat + Noise
+            H_hat_for_disc = embedder(X_hat_for_loss, T, parameters)
 
-        Y_fake = discriminator(H_hat, T, parameters)
+        Y_fake = discriminator(H_hat_for_disc, T, parameters)
         Y_real = discriminator(H, T, parameters)
         Y_fake_e = discriminator(E_hat, T, parameters)
 
@@ -381,13 +407,16 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     G_loss_S = tf.compat.v1.losses.mean_squared_error(H[:, 1:, :], H_hat_supervise[:, :-1, :])
 
     # 3. Two Momments
+    # X_hat_for_loss is X_hat + injected noise when parameters["inject_noise"]
+    # is set (non-static branch only -- see there), X_hat unchanged otherwise.
     G_loss_V1 = tf.reduce_mean(
         input_tensor=tf.abs(
-            tf.sqrt(tf.nn.moments(x=X_hat, axes=[0])[1] + 1e-6) - tf.sqrt(tf.nn.moments(x=X, axes=[0])[1] + 1e-6)
+            tf.sqrt(tf.nn.moments(x=X_hat_for_loss, axes=[0])[1] + 1e-6)
+            - tf.sqrt(tf.nn.moments(x=X, axes=[0])[1] + 1e-6)
         )
     )
     G_loss_V2 = tf.reduce_mean(
-        input_tensor=tf.abs((tf.nn.moments(x=X_hat, axes=[0])[0]) - (tf.nn.moments(x=X, axes=[0])[0]))
+        input_tensor=tf.abs((tf.nn.moments(x=X_hat_for_loss, axes=[0])[0]) - (tf.nn.moments(x=X, axes=[0])[0]))
     )
 
     G_loss_V = G_loss_V1 + G_loss_V2
@@ -418,6 +447,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
         T=T,
         S=S,
         S_z=S_z,
+        Noise=Noise,
         X_hat=X_hat,
         E0_solver=E0_solver,
         E_solver=E_solver,
@@ -430,6 +460,38 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
         G_loss_V=G_loss_V,
         D_loss=D_loss,
     )
+
+
+def _extract_noise_bank(ori_data, onset_sigma=5):
+    """Genuinely pulse-free rows of ori_data (already MinMax-scaled, the
+    same space X_hat lives in), each centered on its own median -- for
+    sampling real noise to inject into the generator's output during
+    phase 3 (see _build_timegan_graph's inject_noise). Not just the
+    pre-trigger segment of pulse-bearing events: a full pulse-free event
+    gives a genuine noise realization at the same resolution/length
+    train_timegan_timed actually trains on.
+
+    Uses a dataset-wide MAD (not each row's own) to decide what counts as
+    "pulse-free": a large enough pulse inflates its OWN row's MAD, which
+    can loosen that row's own onset threshold enough to hide its own
+    pulse (confirmed empirically in Traces_GAN's noise-characterization
+    work) -- a global, robust reference avoids that.
+
+    Returns:
+        - noise_bank: array, shape (n_noise_events, seq_len, dim), or
+          None if no pulse-free rows were found (caller should disable
+          injection and warn rather than fail)
+    """
+    arr = np.asarray(ori_data).reshape(len(ori_data), -1)
+    baselines = np.median(arr, axis=1)
+    centered = arr - baselines[:, None]
+    mads = np.median(np.abs(centered), axis=1) * 1.4826 + 1e-9
+    global_mad = np.median(mads)
+    is_noise = ~np.any(centered > onset_sigma * global_mad, axis=1)
+    if not np.any(is_noise):
+        return None
+    noise_bank = centered[is_noise]
+    return noise_bank.reshape(len(noise_bank), arr.shape[1], 1)
 
 
 def train_timegan_timed(
@@ -502,6 +564,19 @@ def train_timegan_timed(
               few dominant modes despite reasonable-looking loss curves; going to zero removes the
               stabilizing effect these terms provide over pure adversarial training on sequences,
               so tune down rather than eliminate.
+          - inject_noise: default False. When True, phase 3 adds a real, sampled noise segment
+              (drawn from genuinely pulse-free rows of ori_data itself -- see
+              _extract_noise_bank) onto the generator's recovered output, then re-embeds the
+              result and uses THAT wherever the discriminator or moment-matching loss (G_loss_V)
+              would otherwise see the generator's own output -- not just tacked onto the final
+              output after the fact, since the discriminator judges the embedded H_hat, never the
+              recovered X_hat directly, so noise added only there would never reach what actually
+              drives G_loss_U. The point: the generator's own weights are only ever judged on
+              pulse shape, not on also faking noise texture, since real noise is what actually
+              gets judged. Only affects phase 3 (where the discriminator is active) -- phases 1/2
+              and phase 4 generation are unaffected, and require no matching change from a caller.
+              Disabled (and a warning printed) if ori_data has no genuinely pulse-free rows to
+              build a noise bank from.
       - on_training_complete: optional zero-argument callback invoked right after phase 3's
           post-training checkpoint save, before generation begins. Lets a caller record that
           training is done (e.g. write its own progress marker) in case generation itself gets
@@ -580,11 +655,40 @@ def train_timegan_timed(
 
     graph = _build_timegan_graph(parameters, max_seq_len, dim, static_dim)
     X, Z, T, S, S_z = graph["X"], graph["Z"], graph["T"], graph["S"], graph["S_z"]
+    Noise = graph["Noise"]
     X_hat = graph["X_hat"]
     E0_solver, E_solver = graph["E0_solver"], graph["E_solver"]
     D_solver, G_solver, GS_solver = graph["D_solver"], graph["G_solver"], graph["GS_solver"]
     E_loss_T0, G_loss_S = graph["E_loss_T0"], graph["G_loss_S"]
     G_loss_U, G_loss_V, D_loss = graph["G_loss_U"], graph["G_loss_V"], graph["D_loss"]
+
+    noise_bank = None
+    if parameters["inject_noise"]:
+        noise_bank = _extract_noise_bank(ori_data)
+        if noise_bank is None:
+            print(
+                "WARNING: inject_noise was requested but no pulse-free events were found in "
+                "this training data -- disabling noise injection for this run.",
+                flush=True,
+            )
+
+    def _draw_noise(n):
+        """A batch of real, sampled noise segments for injection -- None
+        if inject_noise wasn't requested (or no pulse-free events were
+        found to build a bank from)."""
+        if noise_bank is None:
+            return None
+        idx = np.random.randint(0, len(noise_bank), size=n)
+        return noise_bank[idx]
+
+    def _noise_extras(noise_mb):
+        """Extra feed_dict entry for Noise, or {} when there's nothing to
+        inject (only references Noise, which only exists as a graph
+        tensor when inject_noise was requested, if noise_mb is actually
+        not None, which only happens in that same case)."""
+        if noise_mb is not None:
+            return {Noise: noise_mb}
+        return {}
 
     def _draw_batch():
         """batch_generator(), plus a static-feature slice (aligned to the
@@ -708,10 +812,17 @@ def train_timegan_timed(
                 # Random vector generation
                 Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
                 Sz_mb = _draw_static_noise(batch_size)
+                Noise_mb = _draw_noise(batch_size)
                 # Train generator
                 _, step_g_loss_u, step_g_loss_s, step_g_loss_v = sess.run(
                     [G_solver, G_loss_U, G_loss_S, G_loss_V],
-                    feed_dict={Z: Z_mb, X: X_mb, T: T_mb, **_static_extras(S_mb, Sz_mb)},
+                    feed_dict={
+                        Z: Z_mb,
+                        X: X_mb,
+                        T: T_mb,
+                        **_static_extras(S_mb, Sz_mb),
+                        **_noise_extras(Noise_mb),
+                    },
                 )
                 # Train embedder
                 _, step_e_loss_t0 = sess.run(
@@ -725,13 +836,29 @@ def train_timegan_timed(
             # Random vector generation
             Z_mb = random_generator(batch_size, z_dim, T_mb, max_seq_len)
             Sz_mb = _draw_static_noise(batch_size)
+            Noise_mb = _draw_noise(batch_size)
             # Check discriminator loss before updating
-            check_d_loss = sess.run(D_loss, feed_dict={X: X_mb, T: T_mb, Z: Z_mb, **_static_extras(S_mb, Sz_mb)})
+            check_d_loss = sess.run(
+                D_loss,
+                feed_dict={
+                    X: X_mb,
+                    T: T_mb,
+                    Z: Z_mb,
+                    **_static_extras(S_mb, Sz_mb),
+                    **_noise_extras(Noise_mb),
+                },
+            )
             # Train discriminator (only when the discriminator does not work well)
             if check_d_loss > 0.15:
                 _, step_d_loss = sess.run(
                     [D_solver, D_loss],
-                    feed_dict={X: X_mb, T: T_mb, Z: Z_mb, **_static_extras(S_mb, Sz_mb)},
+                    feed_dict={
+                        X: X_mb,
+                        T: T_mb,
+                        Z: Z_mb,
+                        **_static_extras(S_mb, Sz_mb),
+                        **_noise_extras(Noise_mb),
+                    },
                 )
 
             if itt % 50 == 0:
