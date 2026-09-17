@@ -133,6 +133,33 @@ def test_train_timegan_timed_with_noise_injection(tmp_path):
     _assert_sane_generated_output(info, expected_shape=(5, seq_len, dim))
 
 
+def test_train_timegan_timed_with_normalized_g_loss_v(tmp_path):
+    """normalize_g_loss_v=True: exercises the per-timestep-relative branch
+    of G_loss_V (division by that timestep's own real std instead of a
+    plain absolute mismatch) end to end, combined with inject_noise=True
+    since that's the combination this option was added for."""
+    np.random.seed(6)
+    tf.compat.v1.set_random_seed(6)
+    no, seq_len, dim = 40, 8, 1
+    rng = np.random.default_rng(6)
+    ori_data = (0.5 + 0.01 * rng.standard_normal((no, seq_len, dim))).astype(np.float32)
+    for i in range(0, no, 2):
+        ori_data[i, seq_len // 2, 0] = 1.0
+
+    phase, info = train_timegan_timed(
+        ori_data,
+        dict(TINY_PARAMS, iterations=2, inject_noise=True, normalize_g_loss_v=True),
+        in_filename=str(tmp_path / "test_timed_normalized_g_loss_v"),
+        seconds=120,
+        phase=1,
+        new=True,
+        num_generate=5,
+    )
+
+    assert phase == 4, f"expected all phases to finish within the time budget, got phase {phase}"
+    _assert_sane_generated_output(info, expected_shape=(5, seq_len, dim))
+
+
 def test_train_timegan_base_smoke(tmp_path):
     """timegan.py's train_timegan -- a thin wrapper around
     train_timegan_timed (was previously a full standalone copy of its

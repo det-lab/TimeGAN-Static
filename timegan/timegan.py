@@ -317,6 +317,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     parameters.setdefault("g_loss_s_weight", 100.0)
     parameters.setdefault("g_loss_v_weight", 100.0)
     parameters.setdefault("inject_noise", False)
+    parameters.setdefault("normalize_g_loss_v", False)
     gamma = parameters["gamma"]
 
     # Input place holders
@@ -409,15 +410,30 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     # 3. Two Momments
     # X_hat_for_loss is X_hat + injected noise when parameters["inject_noise"]
     # is set (non-static branch only -- see there), X_hat unchanged otherwise.
-    G_loss_V1 = tf.reduce_mean(
-        input_tensor=tf.abs(
-            tf.sqrt(tf.nn.moments(x=X_hat_for_loss, axes=[0])[1] + 1e-6)
-            - tf.sqrt(tf.nn.moments(x=X, axes=[0])[1] + 1e-6)
-        )
-    )
-    G_loss_V2 = tf.reduce_mean(
-        input_tensor=tf.abs((tf.nn.moments(x=X_hat_for_loss, axes=[0])[0]) - (tf.nn.moments(x=X, axes=[0])[0]))
-    )
+    real_mean, real_var = tf.nn.moments(x=X, axes=[0])
+    gen_mean, gen_var = tf.nn.moments(x=X_hat_for_loss, axes=[0])
+    real_std = tf.sqrt(real_var + 1e-6)
+    gen_std = tf.sqrt(gen_var + 1e-6)
+    if parameters["normalize_g_loss_v"]:
+        # Both terms below are an ABSOLUTE mismatch at each timestep, then
+        # averaged over timesteps with equal formal weight -- but real
+        # per-timestep variance is highly non-uniform over time (e.g. this
+        # project's pulses cluster their onset in roughly the first third
+        # of the pooled window, so real std there runs ~1.7x higher than
+        # in the tail). Equal formal weight over an unequal-scale quantity
+        # means the timesteps with the largest real variance dominate the
+        # absolute loss and get most of the gradient pressure, while
+        # low-variance timesteps (the tail here) are nearly free to get
+        # wrong. Dividing each timestep's mismatch by that timestep's own
+        # real_std makes every timestep compete on relative terms instead,
+        # so the tail's low-amplitude structure isn't cheap to ignore just
+        # because it's low-amplitude. real_std is already bounded away
+        # from 0 by the +1e-6 above.
+        G_loss_V1 = tf.reduce_mean(input_tensor=tf.abs(gen_std - real_std) / real_std)
+        G_loss_V2 = tf.reduce_mean(input_tensor=tf.abs(gen_mean - real_mean) / real_std)
+    else:
+        G_loss_V1 = tf.reduce_mean(input_tensor=tf.abs(gen_std - real_std))
+        G_loss_V2 = tf.reduce_mean(input_tensor=tf.abs(gen_mean - real_mean))
 
     G_loss_V = G_loss_V1 + G_loss_V2
 
@@ -577,6 +593,22 @@ def train_timegan_timed(
               and phase 4 generation are unaffected, and require no matching change from a caller.
               Disabled (and a warning printed) if ori_data has no genuinely pulse-free rows to
               build a noise bank from.
+          - normalize_g_loss_v: default False (reproduces prior behavior exactly). G_loss_V's two
+              terms each average an ABSOLUTE per-timestep mismatch (std, then mean) over all
+              timesteps with equal formal weight, but real per-timestep variance is not uniform
+              over time -- for this project's data, pulse onsets cluster early in the pooled
+              window, so real std runs substantially higher there than in the tail. Equal formal
+              weight over that unequal scale means high-variance timesteps dominate the absolute
+              loss and get most of the gradient pressure, while low-variance timesteps are nearly
+              free for the generator to get wrong -- observed in practice as generated output
+              that reproduces structure only where real variance is largest (e.g. the front of a
+              pulse trace) and goes flat elsewhere, especially pronounced when combined with
+              inject_noise (which lowers the already-weak tail pressure further during training,
+              since injected real noise can satisfy it there without the generator doing
+              anything, but isn't present at generation time to cover the resulting gap). When
+              True, both G_loss_V terms are instead divided by that timestep's own real std
+              before averaging, so every timestep competes on relative rather than absolute
+              terms.
       - on_training_complete: optional zero-argument callback invoked right after phase 3's
           post-training checkpoint save, before generation begins. Lets a caller record that
           training is done (e.g. write its own progress marker) in case generation itself gets
