@@ -32,7 +32,7 @@ import numpy as np
 import tensorflow as tf
 
 from timegan.data_loading import real_data_loading
-from timegan.timegan import load_timegan, train_timegan, train_timegan_timed
+from timegan.timegan import _windowed_log_rms_jitter, load_timegan, train_timegan, train_timegan_timed
 
 TINY_PARAMS = dict(hidden_dim=4, num_layer=2, batch_size=8, module="gru")
 # supervisor() builds num_layers - 1 RNN cells -- num_layer=1 would pass an
@@ -150,6 +150,54 @@ def test_train_timegan_timed_with_normalized_g_loss_v(tmp_path):
         ori_data,
         dict(TINY_PARAMS, iterations=2, inject_noise=True, normalize_g_loss_v=True),
         in_filename=str(tmp_path / "test_timed_normalized_g_loss_v"),
+        seconds=120,
+        phase=1,
+        new=True,
+        num_generate=5,
+    )
+
+    assert phase == 4, f"expected all phases to finish within the time budget, got phase {phase}"
+    _assert_sane_generated_output(info, expected_shape=(5, seq_len, dim))
+
+
+def test_windowed_log_rms_jitter_matches_numpy():
+    """_windowed_log_rms_jitter (the building block of G_loss_T) against a
+    plain-numpy reference: RMS of first differences per window, log-scaled,
+    with a remainder of (seq_len - 1) % window differences dropped."""
+    rng = np.random.default_rng(0)
+    seq_len, dim, window, eps = 20, 2, 6, 1e-9
+    x = (0.5 + 0.01 * rng.standard_normal((7, seq_len, dim))).astype(np.float32)
+
+    with tf.Graph().as_default():
+        ph = tf.compat.v1.placeholder(tf.float32, [None, seq_len, dim])
+        out = _windowed_log_rms_jitter(ph, seq_len, dim, window, eps)
+        with tf.compat.v1.Session() as sess:
+            got = sess.run(out, {ph: x})
+
+    n_win = (seq_len - 1) // window  # 19 // 6 = 3, last difference dropped
+    d = np.diff(x.astype(np.float64), axis=1)[:, : n_win * window, :]
+    e = (d.reshape(7, n_win, window, dim) ** 2).mean(axis=2)
+    want = 0.5 * np.log(e + eps)
+    assert got.shape == (7, n_win, dim)
+    np.testing.assert_allclose(got, want, rtol=1e-3, atol=1e-3)
+
+
+def test_train_timegan_timed_with_texture_loss(tmp_path):
+    """g_loss_t_weight>0: exercises G_loss_T end to end, with inject_noise
+    OFF -- G_loss_T is meant to be used without noise injection, since the
+    injected real noise already supplies the texture it measures."""
+    np.random.seed(7)
+    tf.compat.v1.set_random_seed(7)
+    no, seq_len, dim = 40, 12, 1
+    rng = np.random.default_rng(7)
+    ori_data = (0.5 + 0.01 * rng.standard_normal((no, seq_len, dim))).astype(np.float32)
+    for i in range(0, no, 2):
+        ori_data[i, seq_len // 3, 0] = 1.0
+
+    phase, info = train_timegan_timed(
+        ori_data,
+        dict(TINY_PARAMS, iterations=2, g_loss_t_weight=1.0, texture_window=4),
+        in_filename=str(tmp_path / "test_timed_texture_loss"),
         seconds=120,
         phase=1,
         new=True,

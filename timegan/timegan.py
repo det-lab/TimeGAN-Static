@@ -278,6 +278,46 @@ def train_timegan(ori_data, parameters, filename="timegan_save", version=0, ori_
     return info
 
 
+def _windowed_log_rms_jitter(x, seq_len, dim, window, eps=1e-9):
+    """Log RMS sample-to-sample jitter in consecutive windows along the
+    sequence, per row -- the building block of G_loss_T (texture loss).
+
+    Why this and not a spectrum: G_loss_V compares values ACROSS events at one
+    fixed timestep, so it can't see whether a single trace fluctuates
+    realistically over time. A power spectrum looks like the natural fix, but
+    for this project's data a batch-averaged spectrum is ~97% pulse rows at
+    high frequency (a pulse's edges carry ~3500x the power of the noise
+    floor, which is ~0.04% of the average), so it would match pulse shapes and
+    give no incentive for noise texture at all. It is also stationary (one
+    spectrum over the whole window), so a generator that is too rough early
+    and too smooth late -- exactly the failure seen in every run -- can score
+    well because the two errors cancel. So instead: the RMS of first
+    differences (a high-pass energy) per window, on a log scale so the noise
+    floor (~1e-6 scaled^2 of difference energy) and a smooth generated tail
+    (~1e-10) are comparable, position-resolved so early and late errors can't
+    cancel, and averaged over rows AFTER the log (a geometric mean) so tail
+    windows are set by the typical noise-only row instead of the few
+    high-power pulse rows.
+
+    Args:
+      - x: [batch, seq_len, dim]
+      - seq_len, dim: static sizes (x's own static shape may be partly None)
+      - window: number of first-differences per window; any remainder
+          (seq_len - 1) % window at the end of the sequence is dropped.
+      - eps: floor inside the log, in scaled^2 units. Deliberately ~1e-9: real
+          noise difference-energy is ~1e-6, a perfectly smooth tail is ~1e-10.
+
+    Returns:
+      [batch, n_windows, dim] of 0.5 * log(mean squared first difference + eps).
+    """
+    n_win = (seq_len - 1) // window
+    d = x[:, 1:, :] - x[:, :-1, :]
+    d = d[:, : n_win * window, :]
+    d = tf.reshape(d, [-1, n_win, window, dim])
+    e = tf.reduce_mean(input_tensor=tf.square(d), axis=2)
+    return 0.5 * tf.math.log(e + eps)
+
+
 def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     """Builds the full TimeGAN graph -- placeholders through the loss and
     optimizer ops -- shared by train_timegan_timed and load_timegan.
@@ -307,7 +347,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
       X, Z, T, S, S_z, Noise (placeholders; S/S_z are None if static_dim
       is None, Noise is None unless parameters["inject_noise"] is set),
       X_hat, E0_solver, E_solver, D_solver, G_solver, GS_solver,
-      E_loss_T0, G_loss_S, G_loss_U, G_loss_V, D_loss.
+      E_loss_T0, G_loss_S, G_loss_U, G_loss_V, G_loss_T, D_loss.
     """
     hidden_dim = parameters["hidden_dim"]
     num_layers = parameters["num_layer"]
@@ -318,6 +358,8 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     parameters.setdefault("g_loss_v_weight", 100.0)
     parameters.setdefault("inject_noise", False)
     parameters.setdefault("normalize_g_loss_v", False)
+    parameters.setdefault("g_loss_t_weight", 0.0)
+    parameters.setdefault("texture_window", 9)
     gamma = parameters["gamma"]
 
     # Input place holders
@@ -437,12 +479,31 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
 
     G_loss_V = G_loss_V1 + G_loss_V2
 
-    # 4. Summation
+    # 4. Texture loss (see _windowed_log_rms_jitter's docstring for why this
+    # is not redundant with G_loss_V, and why it is position-resolved and
+    # log-scaled instead of a batch-averaged spectrum). X_hat_for_loss again
+    # -- when inject_noise is set the generator's output is judged together
+    # with the injected real noise, same reasoning as G_loss_V. NOTE: with
+    # inject_noise the injected real noise already supplies the texture this
+    # term measures, so the two together give the generator no incentive of
+    # its own to make texture; use this term with inject_noise off.
+    texture_window = max(1, min(int(parameters["texture_window"]), max_seq_len - 1))
+    G_loss_T = tf.reduce_mean(
+        input_tensor=tf.abs(
+            tf.reduce_mean(
+                input_tensor=_windowed_log_rms_jitter(X_hat_for_loss, max_seq_len, dim, texture_window), axis=0
+            )
+            - tf.reduce_mean(input_tensor=_windowed_log_rms_jitter(X, max_seq_len, dim, texture_window), axis=0)
+        )
+    )
+
+    # 5. Summation
     G_loss = (
         G_loss_U
         + gamma * G_loss_U_e
         + parameters["g_loss_s_weight"] * tf.sqrt(G_loss_S + 1e-6)
         + parameters["g_loss_v_weight"] * G_loss_V
+        + parameters["g_loss_t_weight"] * G_loss_T
     )
 
     # Embedder network loss
@@ -474,6 +535,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
         G_loss_S=G_loss_S,
         G_loss_U=G_loss_U,
         G_loss_V=G_loss_V,
+        G_loss_T=G_loss_T,
         D_loss=D_loss,
     )
 
@@ -609,6 +671,22 @@ def train_timegan_timed(
               True, both G_loss_V terms are instead divided by that timestep's own real std
               before averaging, so every timestep competes on relative rather than absolute
               terms.
+          - g_loss_t_weight: default 0.0 (off -- reproduces prior behavior exactly, this term
+              doesn't exist in the original paper). G_loss_V, normalized or not, only ever
+              compares values ACROSS events at one fixed timestep -- it never looks at how a
+              single sequence's own values fluctuate over time, so it can't tell a smooth trace
+              from a jittery one. G_loss_T compares, per position window along the sequence, the
+              batch-mean of log RMS sample-to-sample jitter (first differences) of X_hat_for_loss
+              against X's -- see _windowed_log_rms_jitter's docstring. Position-resolved so a
+              generator that is too rough early and too smooth late can't score well by the two
+              errors cancelling; log-scaled so the noise floor and a smooth tail are comparable;
+              averaged over rows after the log so tail windows reflect the typical noise-only
+              row rather than pulse edges. Roughly 0.4 between two real batches vs 1.3-2.8
+              (noise floor missing in the tail, position-dependent) for the runs that motivated
+              it. Use with inject_noise off: injected real noise already supplies the texture
+              this term measures.
+          - texture_window: default 9. Number of first-differences per window for G_loss_T
+              (clipped to seq_len - 1; any remainder at the end of the sequence is dropped).
       - on_training_complete: optional zero-argument callback invoked right after phase 3's
           post-training checkpoint save, before generation begins. Lets a caller record that
           training is done (e.g. write its own progress marker) in case generation itself gets
@@ -693,6 +771,7 @@ def train_timegan_timed(
     D_solver, G_solver, GS_solver = graph["D_solver"], graph["G_solver"], graph["GS_solver"]
     E_loss_T0, G_loss_S = graph["E_loss_T0"], graph["G_loss_S"]
     G_loss_U, G_loss_V, D_loss = graph["G_loss_U"], graph["G_loss_V"], graph["D_loss"]
+    G_loss_T = graph["G_loss_T"]
 
     noise_bank = None
     if parameters["inject_noise"]:
@@ -846,8 +925,8 @@ def train_timegan_timed(
                 Sz_mb = _draw_static_noise(batch_size)
                 Noise_mb = _draw_noise(batch_size)
                 # Train generator
-                _, step_g_loss_u, step_g_loss_s, step_g_loss_v = sess.run(
-                    [G_solver, G_loss_U, G_loss_S, G_loss_V],
+                _, step_g_loss_u, step_g_loss_s, step_g_loss_v, step_g_loss_t = sess.run(
+                    [G_solver, G_loss_U, G_loss_S, G_loss_V, G_loss_T],
                     feed_dict={
                         Z: Z_mb,
                         X: X_mb,
@@ -898,6 +977,7 @@ def train_timegan_timed(
                 print(
                     f"phase 3 iter {itt}/{iterations} g_loss_u={step_g_loss_u:.4f} "
                     f"g_loss_s={step_g_loss_s:.4f} g_loss_v={step_g_loss_v:.4f} "
+                    f"g_loss_t={step_g_loss_t:.4f} "
                     f"d_loss={check_d_loss:.4f} elapsed={elapsed:.0f}s",
                     flush=True,
                 )
@@ -928,6 +1008,7 @@ def train_timegan_timed(
                         "g_loss_u": float(step_g_loss_u),
                         "g_loss_s": float(step_g_loss_s),
                         "g_loss_v": float(step_g_loss_v),
+                        "g_loss_t": float(step_g_loss_t),
                         "d_loss": float(check_d_loss),
                         "variance_ratio_mean": float(ratio.mean()),
                         "variance_ratio_min": float(ratio.min()),
