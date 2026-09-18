@@ -347,7 +347,9 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
       X, Z, T, S, S_z, Noise (placeholders; S/S_z are None if static_dim
       is None, Noise is None unless parameters["inject_noise"] is set),
       X_hat, E0_solver, E_solver, D_solver, G_solver, GS_solver,
-      E_loss_T0, G_loss_S, G_loss_U, G_loss_V, G_loss_T, D_loss.
+      E_loss_T0, G_loss_S, G_loss_U, G_loss_V, G_loss_T, G_loss_U_e, D_loss, D_loss_real, D_loss_fake,
+      D_loss_fake_e, and grad_norms (a dict of tensors, or None unless
+      parameters["log_grad_norms"]).
     """
     hidden_dim = parameters["hidden_dim"]
     num_layers = parameters["num_layer"]
@@ -360,6 +362,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     parameters.setdefault("normalize_g_loss_v", False)
     parameters.setdefault("g_loss_t_weight", 0.0)
     parameters.setdefault("texture_window", 9)
+    parameters.setdefault("log_grad_norms", False)
     gamma = parameters["gamma"]
 
     # Input place holders
@@ -506,6 +509,32 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
         + parameters["g_loss_t_weight"] * G_loss_T
     )
 
+    # Optional diagnostics (parameters["log_grad_norms"]): the norm, over the
+    # variables G_solver actually updates (generator + supervisor), of the
+    # gradient of each WEIGHTED term of the generator loss. Raw loss values
+    # say nothing about how hard each term pushes the generator -- that is
+    # loss value x weight x the term's own sensitivity to the parameters --
+    # so this is the direct readout of each term's effective weight. Built
+    # only when requested (it adds one backward graph per term); executed
+    # only when fetched, i.e. at logging steps. A term with no gradient path
+    # to those variables (e.g. G_loss_S, computed from the supervisor on REAL
+    # embeddings) reports 0.
+    grad_norms = None
+    if parameters["log_grad_norms"]:
+        update_vars = g_vars + s_vars
+        weighted_terms = dict(
+            U=G_loss_U,
+            U_e=gamma * G_loss_U_e,
+            S=parameters["g_loss_s_weight"] * tf.sqrt(G_loss_S + 1e-6),
+            V=parameters["g_loss_v_weight"] * G_loss_V,
+            T=parameters["g_loss_t_weight"] * G_loss_T,
+            total=G_loss,
+        )
+        grad_norms = {}
+        for name, term in weighted_terms.items():
+            gs = [g for g in tf.gradients(term, update_vars) if g is not None]
+            grad_norms[name] = tf.linalg.global_norm(gs) if gs else tf.constant(0.0)
+
     # Embedder network loss
     E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
     E_loss0 = 10 * tf.sqrt(E_loss_T0 + 1e-6)
@@ -536,7 +565,12 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
         G_loss_U=G_loss_U,
         G_loss_V=G_loss_V,
         G_loss_T=G_loss_T,
+        G_loss_U_e=G_loss_U_e,
         D_loss=D_loss,
+        D_loss_real=D_loss_real,
+        D_loss_fake=D_loss_fake,
+        D_loss_fake_e=D_loss_fake_e,
+        grad_norms=grad_norms,
     )
 
 
@@ -687,6 +721,34 @@ def train_timegan_timed(
               this term measures.
           - texture_window: default 9. Number of first-differences per window for G_loss_T
               (clipped to seq_len - 1; any remainder at the end of the sequence is dropped).
+          - snapshot_every: default 0 (off). Every this-many phase-3 iterations (and once more when
+              phase 3 finishes), generate snapshot_n (default 128) sequences from a FIXED set of
+              input noise and save them, inverse-scaled to the data's own units, to
+              <out_filename>_samples/phase3_iter<N>.npz (keys: samples, iteration, elapsed,
+              min_val, max_val; ~65 KB each). The noise is drawn once from its own
+              RandomState(snapshot_seed, default 0), so the training RNG stream is untouched, and
+              is the same every time, so differences between snapshots reflect the generator
+              changing rather than sampling variation. Turns every diagnostic of generated output
+              (peak histogram, jitter by position, mode collapse, pulse fraction) into a time
+              series over training instead of one look at the final state -- of an adversarial
+              game that need not converge, so the final iterate is not special. Not supported
+              with ori_data_static (disabled with a warning).
+          - checkpoint_every: default 0 (off). Also keep full checkpoints (no .meta graph; ~20 MB
+              for the debug-run architecture) at the end of phases 1 and 2, every this-many
+              phase-3 iterations, and at the end of phase 3, as <out_filename>_ckpt_<tag> (tags
+              p1_end, p2_end, p3_iter<N>, p3_end), restorable with Saver.restore(sess, prefix).
+              None are deleted, and the normal single resumable checkpoint is unaffected. Lets
+              probes that need the weights (input-responsiveness, discriminator sensitivity) be
+              run at any point in training.
+          - log_grad_norms: default False. At each phase-3 logging step also record the norm of
+              the gradient of each WEIGHTED generator loss term (U, U_e, S, V, T, and the total)
+              with respect to the generator + supervisor variables -- the direct readout of each
+              term's effective weight (raw loss values do not show how hard a term pushes).
+          Independent of these options, phase-3 logging now also records G_loss_U_e, the
+          weighted contribution of each generator loss term, the discriminator's three loss
+          components (real, fake, fake-embedding), the fraction of iterations since the last
+          log in which the discriminator was actually updated (it is skipped when its loss is
+          already below 0.15), and the embedder loss.
       - on_training_complete: optional zero-argument callback invoked right after phase 3's
           post-training checkpoint save, before generation begins. Lets a caller record that
           training is done (e.g. write its own progress marker) in case generation itself gets
@@ -772,6 +834,9 @@ def train_timegan_timed(
     E_loss_T0, G_loss_S = graph["E_loss_T0"], graph["G_loss_S"]
     G_loss_U, G_loss_V, D_loss = graph["G_loss_U"], graph["G_loss_V"], graph["D_loss"]
     G_loss_T = graph["G_loss_T"]
+    G_loss_U_e = graph["G_loss_U_e"]
+    D_loss_real, D_loss_fake, D_loss_fake_e = graph["D_loss_real"], graph["D_loss_fake"], graph["D_loss_fake_e"]
+    grad_norms = graph["grad_norms"]
 
     noise_bank = None
     if parameters["inject_noise"]:
@@ -846,6 +911,47 @@ def train_timegan_timed(
     if not new:
         saver.restore(sess, in_filename + "-" + str(version))
 
+    # Optional training-trajectory logging (see the docstring): fixed-noise
+    # sample snapshots and full checkpoints under distinct names.
+    snapshot_every = int(parameters.get("snapshot_every", 0))
+    snapshot_n = int(parameters.get("snapshot_n", 128))
+    snapshot_seed = int(parameters.get("snapshot_seed", 0))
+    checkpoint_every = int(parameters.get("checkpoint_every", 0))
+    samples_dir = out_filename + "_samples"
+    if snapshot_every and static_dim is not None:
+        print("WARNING: snapshot_every is not supported with static features -- disabled.", flush=True)
+        snapshot_every = 0
+    if snapshot_every:
+        os.makedirs(samples_dir, exist_ok=True)
+        # Its own RandomState: must not consume (or depend on) numpy's global
+        # stream, which drives batch shuffling and the generator's noise.
+        snap_rs = np.random.RandomState(snapshot_seed)
+        snap_idx = [i % no for i in range(snapshot_n)]
+        snap_T = [ori_time[i] for i in snap_idx]
+        snap_Z = [snap_rs.uniform(0.0, 1, [t, z_dim]) for t in snap_T]
+        snap_X = ori_data[snap_idx]
+    extra_saver = tf.compat.v1.train.Saver(max_to_keep=None) if checkpoint_every else None
+
+    def _save_snapshot(itt, elapsed):
+        out = np.zeros([snapshot_n, max_seq_len, dim])
+        for start in range(0, snapshot_n, batch_size):
+            end = min(start + batch_size, snapshot_n)
+            out[start:end] = sess.run(
+                X_hat, feed_dict={Z: snap_Z[start:end], X: snap_X[start:end], T: snap_T[start:end]}
+            )
+        np.savez_compressed(
+            os.path.join(samples_dir, f"phase3_iter{itt:05d}.npz"),
+            samples=(out * max_val + min_val).astype(np.float32),
+            iteration=itt,
+            elapsed=elapsed,
+            min_val=min_val,
+            max_val=max_val,
+        )
+
+    def _save_checkpoint(tag):
+        if extra_saver is not None:
+            extra_saver.save(sess, f"{out_filename}_ckpt_{tag}", write_state=False, write_meta_graph=False)
+
     # Set up time stuff
     start_time = time_ns()  # Get the start time of the training
     max_time_ns = seconds * (10**9)  # Convert seconds to nanoseconds
@@ -876,6 +982,7 @@ def train_timegan_timed(
         # Training phase finished, save model and increment phase
         print("Finish Embedding Network Training", flush=True)
         saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
+        _save_checkpoint("p1_end")
         phase = 2
     if phase == 2:
         # 2. Training only with supervised loss
@@ -910,10 +1017,12 @@ def train_timegan_timed(
         # Training phase finished, save model and increment phase
         print("Finish Training with Supervised Loss Only", flush=True)
         saver.save(sess, out_filename, global_step=version, latest_filename=checkpoint_filename)
+        _save_checkpoint("p2_end")
         phase = 3
     if phase == 3:
         # 3. Joint Training
         print("Start Joint Training", flush=True)
+        d_checks = d_updates = 0  # discriminator-update bookkeeping, reset at each log line
 
         for itt in range(current_iter, iterations):
             # Generator training (twice more than discriminator training)
@@ -925,8 +1034,8 @@ def train_timegan_timed(
                 Sz_mb = _draw_static_noise(batch_size)
                 Noise_mb = _draw_noise(batch_size)
                 # Train generator
-                _, step_g_loss_u, step_g_loss_s, step_g_loss_v, step_g_loss_t = sess.run(
-                    [G_solver, G_loss_U, G_loss_S, G_loss_V, G_loss_T],
+                _, step_g_loss_u, step_g_loss_s, step_g_loss_v, step_g_loss_t, step_g_loss_ue = sess.run(
+                    [G_solver, G_loss_U, G_loss_S, G_loss_V, G_loss_T, G_loss_U_e],
                     feed_dict={
                         Z: Z_mb,
                         X: X_mb,
@@ -949,18 +1058,20 @@ def train_timegan_timed(
             Sz_mb = _draw_static_noise(batch_size)
             Noise_mb = _draw_noise(batch_size)
             # Check discriminator loss before updating
-            check_d_loss = sess.run(
-                D_loss,
-                feed_dict={
-                    X: X_mb,
-                    T: T_mb,
-                    Z: Z_mb,
-                    **_static_extras(S_mb, Sz_mb),
-                    **_noise_extras(Noise_mb),
-                },
+            d_feed = {
+                X: X_mb,
+                T: T_mb,
+                Z: Z_mb,
+                **_static_extras(S_mb, Sz_mb),
+                **_noise_extras(Noise_mb),
+            }
+            check_d_loss, chk_d_real, chk_d_fake, chk_d_fake_e = sess.run(
+                [D_loss, D_loss_real, D_loss_fake, D_loss_fake_e], feed_dict=d_feed
             )
+            d_checks += 1
             # Train discriminator (only when the discriminator does not work well)
             if check_d_loss > 0.15:
+                d_updates += 1
                 _, step_d_loss = sess.run(
                     [D_solver, D_loss],
                     feed_dict={
@@ -981,6 +1092,28 @@ def train_timegan_timed(
                     f"d_loss={check_d_loss:.4f} elapsed={elapsed:.0f}s",
                     flush=True,
                 )
+                w_ue = parameters["gamma"] * step_g_loss_ue
+                w_s = parameters["g_loss_s_weight"] * float(np.sqrt(step_g_loss_s + 1e-6))
+                w_v = parameters["g_loss_v_weight"] * step_g_loss_v
+                w_t = parameters["g_loss_t_weight"] * step_g_loss_t
+                d_upd = d_updates / max(d_checks, 1)
+                print(
+                    f"phase 3 iter {itt}/{iterations} weighted G terms: U={step_g_loss_u:.3f} U_e={w_ue:.3f} "
+                    f"S={w_s:.3f} V={w_v:.3f} T={w_t:.3f} | D real={chk_d_real:.3f} fake={chk_d_fake:.3f} "
+                    f"fake_e={chk_d_fake_e:.3f} updated={d_upd:.2f} | e_loss_t0={step_e_loss_t0:.2e}",
+                    flush=True,
+                )
+                gn = {}
+                if grad_norms is not None:
+                    names = list(grad_norms.keys())
+                    vals = sess.run([grad_norms[k] for k in names], feed_dict=d_feed)
+                    gn = {f"grad_norm_{k}": float(v) for k, v in zip(names, vals)}
+                    print(
+                        f"phase 3 iter {itt}/{iterations} generator grad norms (weighted terms): "
+                        + " ".join(f"{k[10:]}={v:.3g}" for k, v in gn.items()),
+                        flush=True,
+                    )
+                d_checks = d_updates = 0
 
                 # Per-timestep variance check on the same minibatch used for
                 # the discriminator loss above: catches a generator
@@ -1010,11 +1143,27 @@ def train_timegan_timed(
                         "g_loss_v": float(step_g_loss_v),
                         "g_loss_t": float(step_g_loss_t),
                         "d_loss": float(check_d_loss),
+                        "g_loss_u_e": float(step_g_loss_ue),
+                        "weighted_u_e": float(w_ue),
+                        "weighted_s": float(w_s),
+                        "weighted_v": float(w_v),
+                        "weighted_t": float(w_t),
+                        "d_loss_real": float(chk_d_real),
+                        "d_loss_fake": float(chk_d_fake),
+                        "d_loss_fake_e": float(chk_d_fake_e),
+                        "d_update_frac": float(d_upd),
+                        "e_loss_t0": float(step_e_loss_t0),
                         "variance_ratio_mean": float(ratio.mean()),
                         "variance_ratio_min": float(ratio.min()),
                         "variance_ratio_max": float(ratio.max()),
+                        **gn,
                     }
                 )
+
+            if snapshot_every and itt % snapshot_every == 0:
+                _save_snapshot(itt, (time_ns() - start_time) / 1e9)
+            if checkpoint_every and itt > 0 and itt % checkpoint_every == 0:
+                _save_checkpoint(f"p3_iter{itt:05d}")
 
             # End/suspend training if time is over max
             now = time_ns()
@@ -1023,6 +1172,9 @@ def train_timegan_timed(
                 return (3, itt)
         # Final training phase finished, proceed to data generation
         print("Finish Joint Training", flush=True)
+        if snapshot_every:
+            _save_snapshot(iterations, (time_ns() - start_time) / 1e9)
+        _save_checkpoint("p3_end")
         # Checkpoint here, before generation -- generation runs a separate
         # sess.run() below that a large `no` can crash (see the chunking
         # note below), and until now the only save() after joint training

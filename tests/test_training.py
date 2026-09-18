@@ -208,6 +208,65 @@ def test_train_timegan_timed_with_texture_loss(tmp_path):
     _assert_sane_generated_output(info, expected_shape=(5, seq_len, dim))
 
 
+def test_train_timegan_timed_trajectory_logging(tmp_path):
+    """snapshot_every / checkpoint_every / log_grad_norms, plus the always-on
+    loss accounting: files land where documented with the documented
+    contents, the history records carry the new fields, and a saved
+    checkpoint can actually be restored (load_timegan on the p3_end one)."""
+    import json
+    import os
+
+    np.random.seed(8)
+    tf.compat.v1.set_random_seed(8)
+    no, seq_len, dim = 40, 12, 1
+    rng = np.random.default_rng(8)
+    ori_data = (0.5 + 0.01 * rng.standard_normal((no, seq_len, dim))).astype(np.float32)
+    for i in range(0, no, 2):
+        ori_data[i, seq_len // 3, 0] = 1.0
+
+    out = str(tmp_path / "test_trajectory")
+    params = dict(
+        TINY_PARAMS, iterations=2, g_loss_t_weight=1.0, texture_window=4,
+        snapshot_every=1, snapshot_n=5, checkpoint_every=1, log_grad_norms=True,
+    )
+    phase, info = train_timegan_timed(
+        ori_data, dict(params), in_filename=out, seconds=120, phase=1, new=True, num_generate=5
+    )
+    assert phase == 4
+    _assert_sane_generated_output(info, expected_shape=(5, seq_len, dim))
+
+    # fixed-noise sample snapshots: iterations 0 and 1, plus the end-of-phase-3 one (iteration == iterations)
+    for it in (0, 1, 2):
+        snap = np.load(f"{out}_samples/phase3_iter{it:05d}.npz")
+        assert snap["samples"].shape == (5, seq_len, dim)
+        assert np.isfinite(snap["samples"]).all()
+        assert int(snap["iteration"]) == it
+        assert {"elapsed", "min_val", "max_val"} <= set(snap.files)
+
+    # full checkpoints under distinct names (index file exists; no .meta graph written)
+    for tag in ("p1_end", "p2_end", "p3_iter00001", "p3_end"):
+        assert os.path.exists(f"{out}_ckpt_{tag}.index"), tag
+        assert not os.path.exists(f"{out}_ckpt_{tag}.meta"), tag
+
+    # history: phase-3 record at iteration 0 carries the new accounting + gradient-norm fields
+    recs = [json.loads(line) for line in open(out + "_history.jsonl")]
+    p3 = [r for r in recs if r["phase"] == 3]
+    assert p3
+    for key in ("g_loss_u_e", "weighted_s", "weighted_v", "weighted_t", "d_loss_real", "d_loss_fake",
+                "d_loss_fake_e", "d_update_frac", "e_loss_t0",
+                "grad_norm_U", "grad_norm_U_e", "grad_norm_S", "grad_norm_V", "grad_norm_T", "grad_norm_total"):
+        assert key in p3[0], key
+        assert np.isfinite(p3[0][key]), key
+    assert 0.0 <= p3[0]["d_update_frac"] <= 1.0
+    # G_loss_S is computed from the supervisor run on REAL embeddings, so it reaches only the supervisor's
+    # variables (not the generator's) -- its norm over generator+supervisor variables is finite and >= 0
+    assert p3[0]["grad_norm_S"] >= 0.0
+
+    # a saved checkpoint really restores
+    restored = load_timegan(ori_data, dict(params), filename=f"{out}_ckpt_p3_end")
+    _assert_sane_generated_output(restored, expected_shape=(no, seq_len, dim))
+
+
 def test_train_timegan_base_smoke(tmp_path):
     """timegan.py's train_timegan -- a thin wrapper around
     train_timegan_timed (was previously a full standalone copy of its
