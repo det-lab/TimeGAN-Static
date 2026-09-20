@@ -318,7 +318,112 @@ def _windowed_log_rms_jitter(x, seq_len, dim, window, eps=1e-9):
     return 0.5 * tf.math.log(e + eps)
 
 
-def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
+def _texture_defaults(parameters):
+    parameters.setdefault("texture_kind", "jitter")
+    parameters.setdefault("texture_band_window", 16)
+    parameters.setdefault("texture_noise_amp", 200.0)
+    parameters.setdefault("texture_min_rows", 3.0)
+
+
+def _band_projector(window):
+    """[window, window] matrix that removes each window's linear trend (residual of a straight-line fit)."""
+    t = np.arange(window, dtype=np.float64)
+    A = np.stack([t, np.ones(window)], axis=1)
+    return (np.eye(window) - A @ np.linalg.inv(A.T @ A) @ A.T).astype(np.float32)
+
+
+def _band_edges(window):
+    """rfft bin edges of the low / mid / high texture bands; for window=16 these are bins 1-2, 3-5, 6-8."""
+    if window < 12:
+        raise ValueError(f"texture_band_window must be >= 12 for three usable frequency bands, got {window}")
+    return [1, 3, 6, window // 2 + 1]
+
+
+def _band_texture_features_np(x, window, eps=1e-9):
+    """numpy reference for _band_texture_features: x [N, seq_len, dim] -> [N, n_win, dim, 3]."""
+    x = np.asarray(x, dtype=np.float64)
+    n, seq_len, dim = x.shape
+    n_win = seq_len // window
+    proj = _band_projector(window).astype(np.float64)
+    edges = _band_edges(window)
+    z = x[:, : n_win * window, :].transpose(0, 2, 1).reshape(n, dim, n_win, window)
+    r = z @ proj
+    p = np.abs(np.fft.rfft(r, axis=-1)) ** 2
+    bands = np.stack([p[..., edges[i]:edges[i + 1]].mean(axis=-1) for i in range(3)], axis=-1)
+    return np.log(bands + eps).transpose(0, 2, 1, 3)
+
+
+def _texture_reference(data, window, noise_amp, eps=1e-9):
+    """Fixed population target for the band texture loss: mean band features of the NOISE-ONLY rows of `data`
+    (already scaled; [no, seq_len, dim]), where noise-only means the row stays within noise_amp (scaled units,
+    one per channel) of its own median on BOTH sides. Returns [n_win, dim, 3]."""
+    data = np.asarray(data, dtype=np.float64)
+    no, seq_len, dim = data.shape
+    n_win = seq_len // window
+    ref = np.zeros((n_win, dim, 3))
+    for c in range(dim):
+        x = data[:, :, c]
+        med = np.median(x, axis=1)
+        keep = ((x.max(axis=1) - med) < noise_amp[c]) & ((med - x.min(axis=1)) < noise_amp[c])
+        if keep.sum() < 10:
+            raise ValueError(
+                f"texture_kind='bands' needs a population of noise-only rows to build its reference from; "
+                f"channel {c} has only {int(keep.sum())} rows within {noise_amp[c]:.4g} (scaled) of their median"
+            )
+        ref[:, c, :] = _band_texture_features_np(x[keep][:, :, None], window, eps)[:, :, 0, :].mean(axis=0)
+    return ref.astype(np.float32)
+
+
+def _band_texture_features(x, seq_len, dim, window, eps=1e-9):
+    """[batch, n_windows, dim, 3]: log band power (low / mid / high) per window of `window` samples, after
+    removing each window's linear trend. TensorFlow twin of _band_texture_features_np."""
+    n_win = seq_len // window
+    edges = _band_edges(window)
+    xt = tf.transpose(a=x[:, : n_win * window, :], perm=[0, 2, 1])
+    xt = tf.reshape(xt, [-1, dim, n_win, window])
+    r = tf.tensordot(xt, tf.constant(_band_projector(window)), axes=[[3], [0]])
+    spec = tf.signal.rfft(r)
+    power = tf.square(tf.math.real(spec)) + tf.square(tf.math.imag(spec))
+    bands = [tf.reduce_mean(input_tensor=power[..., edges[i]:edges[i + 1]], axis=-1) for i in range(3)]
+    feats = tf.math.log(tf.stack(bands, axis=-1) + eps)
+    return tf.transpose(a=feats, perm=[0, 2, 1, 3])
+
+
+def _band_texture_loss(x, seq_len, dim, window, ref, noise_amp, min_rows):
+    """G_loss_T for texture_kind="bands". Mean absolute difference, per (window, channel, band), between the
+    log band power of the generated batch's NOISE-LIKE rows and the fixed real reference table.
+
+    Written after the first texture loss (log RMS of first differences) turned out to be satisfiable the wrong
+    way: with it on, the generator met the target with big slow wiggles or a collapsed template, neither of
+    which looks like noise, because a first difference cannot tell a large slow wiggle from small white
+    noise (the acceptance test in Traces_GAN's investigate_texture_measure_acceptance.py). The three bands make
+    white noise and coloured noise different; the position windows keep early and late errors from cancelling.
+
+    Noise-like rows only: pooling every row lets pulse rows (41% of this project's data, with ~3500x the
+    high-frequency power) mask the noise rows' spectrum. Row weights are a sigmoid of how far the row's peak
+    stands above its own median relative to noise_amp, with NO gradient -- otherwise the generator could lower
+    the loss by making its rows pulse-like instead of textured. The loss is scaled down when fewer than
+    min_rows noise-like rows are in the batch (its estimate would be too noisy to trust).
+
+    Args:
+      - x: [batch, seq_len, dim] generated batch (scaled units)
+      - ref: [n_win, dim, 3] constant target from _texture_reference
+      - noise_amp: [dim] noise-like threshold in scaled units
+    """
+    feats = _band_texture_features(x, seq_len, dim, window)
+    xs = tf.stop_gradient(x)
+    med = tf.sort(xs, axis=1)[:, seq_len // 2, :]
+    amp = tf.reduce_max(input_tensor=xs, axis=1) - med
+    amp_thr = tf.constant(np.asarray(noise_amp, dtype=np.float32))
+    w = tf.sigmoid((amp_thr - amp) / (0.25 * amp_thr))
+    wsum = tf.reduce_sum(input_tensor=w, axis=0)
+    gen = tf.reduce_sum(input_tensor=feats * w[:, None, :, None], axis=0) / (wsum[None, :, None] + 1e-6)
+    dist = tf.reduce_mean(input_tensor=tf.abs(gen - tf.constant(np.asarray(ref, dtype=np.float32))), axis=[0, 2])
+    conf = tf.minimum(1.0, wsum / min_rows)
+    return tf.reduce_mean(input_tensor=conf * dist)
+
+
+def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None, texture=None):
     """Builds the full TimeGAN graph -- placeholders through the loss and
     optimizer ops -- shared by train_timegan_timed and load_timegan.
 
@@ -342,6 +447,8 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
           parameters["dim"] does elsewhere.
       - max_seq_len, dim: from extract_time(ori_data)/ori_data.shape
       - static_dim: static-feature width, or None for no static support
+      - texture: only for texture_kind="bands": dict(ref=[n_win, dim, 3], noise_amp=[dim]) built from the
+          training data by train_timegan_timed. None (e.g. load_timegan, which never trains) makes G_loss_T 0.
 
     Returns a dict with everything a caller might need to feed/run:
       X, Z, T, S, S_z, Noise (placeholders; S/S_z are None if static_dim
@@ -362,6 +469,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     parameters.setdefault("normalize_g_loss_v", False)
     parameters.setdefault("g_loss_t_weight", 0.0)
     parameters.setdefault("texture_window", 9)
+    _texture_defaults(parameters)
     parameters.setdefault("log_grad_norms", False)
     gamma = parameters["gamma"]
 
@@ -490,15 +598,31 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None):
     # inject_noise the injected real noise already supplies the texture this
     # term measures, so the two together give the generator no incentive of
     # its own to make texture; use this term with inject_noise off.
-    texture_window = max(1, min(int(parameters["texture_window"]), max_seq_len - 1))
-    G_loss_T = tf.reduce_mean(
-        input_tensor=tf.abs(
-            tf.reduce_mean(
-                input_tensor=_windowed_log_rms_jitter(X_hat_for_loss, max_seq_len, dim, texture_window), axis=0
+    if parameters["texture_kind"] == "bands":
+        if texture is None:
+            G_loss_T = tf.constant(0.0)
+        else:
+            G_loss_T = _band_texture_loss(
+                X_hat_for_loss,
+                max_seq_len,
+                dim,
+                int(parameters["texture_band_window"]),
+                texture["ref"],
+                texture["noise_amp"],
+                float(parameters["texture_min_rows"]),
             )
-            - tf.reduce_mean(input_tensor=_windowed_log_rms_jitter(X, max_seq_len, dim, texture_window), axis=0)
+    elif parameters["texture_kind"] == "jitter":
+        texture_window = max(1, min(int(parameters["texture_window"]), max_seq_len - 1))
+        G_loss_T = tf.reduce_mean(
+            input_tensor=tf.abs(
+                tf.reduce_mean(
+                    input_tensor=_windowed_log_rms_jitter(X_hat_for_loss, max_seq_len, dim, texture_window), axis=0
+                )
+                - tf.reduce_mean(input_tensor=_windowed_log_rms_jitter(X, max_seq_len, dim, texture_window), axis=0)
+            )
         )
-    )
+    else:
+        raise ValueError(f"texture_kind must be 'jitter' or 'bands', got {parameters['texture_kind']!r}")
 
     # 5. Summation
     G_loss = (
@@ -719,6 +843,18 @@ def train_timegan_timed(
               (noise floor missing in the tail, position-dependent) for the runs that motivated
               it. Use with inject_noise off: injected real noise already supplies the texture
               this term measures.
+          - texture_kind: default "jitter" (the first-difference measure above). "bands" switches
+              G_loss_T to a spectral-shape measure: log power in three frequency bands (FFT bins 1-2,
+              3-5 and 6-8 of each linearly detrended window of texture_band_window=16 samples), per
+              position window, averaged over the batch's NOISE-LIKE rows only (rows whose peak stands
+              less than texture_noise_amp, in the data's units, above their own median; soft weights,
+              no gradient through them) and compared with a FIXED reference table built once from the
+              training data's noise-only rows. Motivation: "jitter" can be met with large slow wiggles
+              or a collapsed template (v8 sweep), which look nothing like noise; the band measure
+              separates white from coloured noise, and conditioning on noise-like rows stops pulse
+              rows from masking the noise floor. Its loss is scaled down when the batch has fewer than
+              texture_min_rows (default 3) noise-like rows. Needs a population of noise-only rows in
+              ori_data (raises otherwise). Use with inject_noise off.
           - texture_window: default 9. Number of first-differences per window for G_loss_T
               (clipped to seq_len - 1; any remainder at the end of the sequence is dropped).
           - snapshot_every: default 0 (off). Every this-many phase-3 iterations (and once more when
@@ -825,7 +961,24 @@ def train_timegan_timed(
     parameters["static_dim"] = static_dim
     z_dim = dim  # still used below for random_generator() calls
 
-    graph = _build_timegan_graph(parameters, max_seq_len, dim, static_dim)
+    _texture_defaults(parameters)
+    texture = None
+    if parameters["texture_kind"] == "bands" and parameters.get("g_loss_t_weight", 0.0) > 0:
+        # Reference table and threshold in the scaled units the network works in; texture_noise_amp is given in
+        # the data's own units (e.g. ADC counts) because that is how a person thinks about "noise-like".
+        tex_window = int(parameters["texture_band_window"])
+        noise_amp = np.broadcast_to(
+            np.asarray(parameters["texture_noise_amp"], dtype=np.float64) / (np.asarray(max_val, dtype=np.float64) + 1e-7),
+            (dim,),
+        )
+        texture = dict(ref=_texture_reference(ori_data, tex_window, noise_amp), noise_amp=noise_amp)
+        print(
+            f"Texture loss (bands): window {tex_window}, reference table built from the noise-only rows of the "
+            f"training data (noise-like = within {parameters['texture_noise_amp']} data units of the row median)",
+            flush=True,
+        )
+
+    graph = _build_timegan_graph(parameters, max_seq_len, dim, static_dim, texture=texture)
     X, Z, T, S, S_z = graph["X"], graph["Z"], graph["T"], graph["S"], graph["S_z"]
     Noise = graph["Noise"]
     X_hat = graph["X_hat"]

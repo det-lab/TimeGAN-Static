@@ -32,7 +32,16 @@ import numpy as np
 import tensorflow as tf
 
 from timegan.data_loading import real_data_loading
-from timegan.timegan import _windowed_log_rms_jitter, load_timegan, train_timegan, train_timegan_timed
+from timegan.timegan import (
+    _band_texture_features,
+    _band_texture_features_np,
+    _band_texture_loss,
+    _texture_reference,
+    _windowed_log_rms_jitter,
+    load_timegan,
+    train_timegan,
+    train_timegan_timed,
+)
 
 TINY_PARAMS = dict(hidden_dim=4, num_layer=2, batch_size=8, module="gru")
 # supervisor() builds num_layers - 1 RNN cells -- num_layer=1 would pass an
@@ -265,6 +274,85 @@ def test_train_timegan_timed_trajectory_logging(tmp_path):
     # a saved checkpoint really restores
     restored = load_timegan(ori_data, dict(params), filename=f"{out}_ckpt_p3_end")
     _assert_sane_generated_output(restored, expected_shape=(no, seq_len, dim))
+
+
+def test_band_texture_features_match_numpy():
+    """_band_texture_features (TF) against its numpy twin: log band power per window, low/mid/high bands."""
+    rng = np.random.default_rng(1)
+    seq_len, dim, window = 64, 2, 16
+    x = (0.3 + 0.02 * rng.standard_normal((6, seq_len, dim))).astype(np.float32)
+    with tf.Graph().as_default():
+        ph = tf.compat.v1.placeholder(tf.float32, [None, seq_len, dim])
+        out = _band_texture_features(ph, seq_len, dim, window)
+        with tf.compat.v1.Session() as sess:
+            got = sess.run(out, {ph: x})
+    want = _band_texture_features_np(x, window)
+    assert got.shape == (6, 4, dim, 3)
+    np.testing.assert_allclose(got, want, rtol=1e-3, atol=1e-2)
+
+
+def test_band_texture_loss_separates_white_noise_from_cheap_imitations():
+    """The reason G_loss_T has a "bands" kind: white noise at the true amplitude must score low, while smooth,
+    slowly wandering and period-2 traces -- all of which a first-difference measure can be made to accept -- must
+    score high, with pulse rows mixed into the batch (they must not be able to mask or drive the result)."""
+    rng = np.random.default_rng(3)
+    seq_len, dim, window, sig = 64, 1, 16, 0.002
+    n = 4000
+    real = 0.3 + sig * rng.standard_normal((n, seq_len, dim))
+    ref = _texture_reference(real, window, noise_amp=np.array([0.05]))
+
+    def batch(kind, n_rows=48):
+        t = np.arange(seq_len)
+        if kind == "white":
+            x = 0.3 + sig * rng.standard_normal((n_rows, seq_len))
+        elif kind == "smooth":
+            x = 0.3 + 0.05 * sig * rng.standard_normal((n_rows, seq_len))
+        elif kind == "wander":  # slow, big, with the SAME mean |first difference| as the white noise
+            k = np.exp(-0.5 * (np.arange(-12, 13) / 4.0) ** 2)
+            z = np.array([np.convolve(r, k, mode="same") for r in rng.standard_normal((n_rows, seq_len))])
+            z *= (sig * 2 / np.sqrt(np.pi)) / np.abs(np.diff(z, axis=1)).mean()
+            x = 0.3 + z
+        elif kind == "ringing":  # period-2 alternation with the same mean |first difference|
+            x = 0.3 + (sig * 2 / np.sqrt(np.pi)) / 2 * np.tile((-1.0) ** t, (n_rows, 1))
+        pulses = 0.3 + 0.6 * np.exp(-np.abs(t - 20) / 4.0)[None, :] + sig * rng.standard_normal((16, seq_len))
+        return np.concatenate([x, pulses], axis=0)[:, :, None].astype(np.float32)
+
+    with tf.Graph().as_default():
+        ph = tf.compat.v1.placeholder(tf.float32, [None, seq_len, dim])
+        loss = _band_texture_loss(ph, seq_len, dim, window, ref, np.array([0.05]), min_rows=3.0)
+        with tf.compat.v1.Session() as sess:
+            got = {k: float(sess.run(loss, {ph: batch(k)})) for k in ("white", "smooth", "wander", "ringing")}
+            pulses_only = float(sess.run(loss, {ph: batch("white")[-16:]}))
+    assert got["white"] < 0.6, got
+    for k in ("smooth", "wander", "ringing"):
+        assert got[k] > 3 * got["white"] and got[k] > 1.5, (k, got)
+    assert pulses_only < 0.1, pulses_only  # no noise-like rows in the batch -> the loss switches itself off
+
+
+def test_train_timegan_timed_with_band_texture_loss(tmp_path):
+    """texture_kind="bands" end to end: reference table built from the training data's noise-only rows, the loss
+    wired into phase 3 with inject_noise off (the intended use)."""
+    np.random.seed(9)
+    tf.compat.v1.set_random_seed(9)
+    no, seq_len, dim = 60, 32, 1
+    rng = np.random.default_rng(9)
+    ori_data = (0.5 + 0.01 * rng.standard_normal((no, seq_len, dim))).astype(np.float32)
+    for i in range(0, no, 3):
+        ori_data[i, seq_len // 3, 0] = 1.0
+
+    phase, info = train_timegan_timed(
+        ori_data,
+        dict(TINY_PARAMS, iterations=2, g_loss_t_weight=1.0, texture_kind="bands", texture_band_window=16,
+             texture_noise_amp=0.2),
+        in_filename=str(tmp_path / "test_timed_band_texture"),
+        seconds=120,
+        phase=1,
+        new=True,
+        num_generate=5,
+    )
+
+    assert phase == 4, f"expected all phases to finish within the time budget, got phase {phase}"
+    _assert_sane_generated_output(info, expected_shape=(5, seq_len, dim))
 
 
 def test_train_timegan_base_smoke(tmp_path):
