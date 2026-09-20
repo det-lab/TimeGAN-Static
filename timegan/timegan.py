@@ -335,7 +335,7 @@ def _band_projector(window):
 def _band_edges(window):
     """rfft bin edges of the low / mid / high texture bands; for window=16 these are bins 1-2, 3-5, 6-8."""
     if window < 12:
-        raise ValueError(f"texture_band_window must be >= 12 for three usable frequency bands, got {window}")
+        raise ValueError(f"texture_band_window must be >= 12 for three usable frequency bands, got {window}")  # noqa: TRY003
     return [1, 3, 6, window // 2 + 1]
 
 
@@ -349,7 +349,7 @@ def _band_texture_features_np(x, window, eps=1e-9):
     z = x[:, : n_win * window, :].transpose(0, 2, 1).reshape(n, dim, n_win, window)
     r = z @ proj
     p = np.abs(np.fft.rfft(r, axis=-1)) ** 2
-    bands = np.stack([p[..., edges[i]:edges[i + 1]].mean(axis=-1) for i in range(3)], axis=-1)
+    bands = np.stack([p[..., edges[i] : edges[i + 1]].mean(axis=-1) for i in range(3)], axis=-1)
     return np.log(bands + eps).transpose(0, 2, 1, 3)
 
 
@@ -366,7 +366,7 @@ def _texture_reference(data, window, noise_amp, eps=1e-9):
         med = np.median(x, axis=1)
         keep = ((x.max(axis=1) - med) < noise_amp[c]) & ((med - x.min(axis=1)) < noise_amp[c])
         if keep.sum() < 10:
-            raise ValueError(
+            raise ValueError(  # noqa: TRY003
                 f"texture_kind='bands' needs a population of noise-only rows to build its reference from; "
                 f"channel {c} has only {int(keep.sum())} rows within {noise_amp[c]:.4g} (scaled) of their median"
             )
@@ -384,7 +384,7 @@ def _band_texture_features(x, seq_len, dim, window, eps=1e-9):
     r = tf.tensordot(xt, tf.constant(_band_projector(window)), axes=[[3], [0]])
     spec = tf.signal.rfft(r)
     power = tf.square(tf.math.real(spec)) + tf.square(tf.math.imag(spec))
-    bands = [tf.reduce_mean(input_tensor=power[..., edges[i]:edges[i + 1]], axis=-1) for i in range(3)]
+    bands = [tf.reduce_mean(input_tensor=power[..., edges[i] : edges[i + 1]], axis=-1) for i in range(3)]
     feats = tf.math.log(tf.stack(bands, axis=-1) + eps)
     return tf.transpose(a=feats, perm=[0, 2, 1, 3])
 
@@ -423,6 +423,120 @@ def _band_texture_loss(x, seq_len, dim, window, ref, noise_amp, min_rows):
     return tf.reduce_mean(input_tensor=conf * dist)
 
 
+def _finite_or_none(v):
+    """A JSON-safe float, or None for missing / non-finite values."""
+    if v is None:
+        return None
+    v = float(v)
+    return v if np.isfinite(v) else None
+
+
+def _mean_pair_corr(rows):
+    """Mean Pearson correlation over all pairs of distinct rows (None if fewer than 3 usable rows). Near 0 for
+    independent traces, near 1 when the rows are copies of one template (mode collapse)."""
+    if len(rows) < 3:
+        return None
+    r = rows - rows.mean(axis=1, keepdims=True)
+    norm = np.linalg.norm(r, axis=1, keepdims=True)
+    ok = norm[:, 0] > 1e-12
+    if ok.sum() < 3:
+        return None
+    r = r[ok] / norm[ok]
+    m = len(r)
+    return (float((r @ r.T).sum()) - m) / (m * (m - 1))
+
+
+def _diag_metrics(x, window, ref, noise_amp, pulse_amp, sat_frac, min_rows=3.0, real_std=None):
+    """Quality/diversity numbers for a batch of traces, meant to be logged over training (log_diagnostics).
+
+    All quantities are cheap numpy summaries whose real-data values are known, so a generated batch can be read
+    against a reference computed the same way on real rows. Each answers a failure seen in this project's runs:
+
+      - frac_noise / frac_pulse / frac_saturated: composition of the batch (rows within noise_amp of their own
+          median on both sides / rows whose peak stands more than pulse_amp above their median / rows with at
+          least 3 samples at or above sat_frac). A run can look healthy on every loss while its pulse share
+          swings between snapshots or a class is missing.
+      - tex_lr_low / tex_lr_mid / tex_lr_high: natural-log ratio (generated / real) of the mean band power of the
+          batch's noise-like rows, averaged over position windows, in the three bands of the "bands" texture
+          measure. 0 matches real; -2 is 7x too little power. tex_lr_high_tail is the high band in the LAST
+          window (where the start-rough / end-smooth failure lives); tex_dist is the mean absolute log ratio,
+          i.e. the value G_loss_T ("bands") would take on the batch, so it is available in every run whether or
+          not the texture loss is on. None without a reference or with fewer than min_rows noise-like rows.
+      - acf1: lag-1 autocorrelation of the noise-like rows after removing each window's linear trend. Removing
+          the trend biases white noise slightly negative (about -0.12 for windows of 16), so read it against the
+          real-row reference (dg_real_acf1), not against 0; coloured noise reads far above it (positive, often
+          0.5 or more).
+      - pair_corr_noise / pair_corr_pulse: mean pairwise correlation among noise-like / pulse rows (diversity: near
+          1 means the rows are copies of one template); peak_bin_std: spread of the pulse rows' peak position.
+      - var_ratio_front / _mid / _tail: generated std / real std per timestep, averaged over the first / middle /
+          last third of the window, over the whole batch (a steadier replacement for the per-minibatch
+          variance_check line).
+
+    x is [N, seq_len] in the network's scaled units (channel 0); ref is the [n_win, 3] band reference (or None);
+    noise_amp, pulse_amp are in scaled units.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n, seq_len = x.shape
+    med = np.median(x, axis=1)
+    up = x.max(axis=1) - med
+    down = med - x.min(axis=1)
+    noise_like = (up < noise_amp) & (down < noise_amp)
+    pulse = up > pulse_amp
+    saturated = (x >= sat_frac).sum(axis=1) >= 3
+    out = dict(
+        frac_noise=noise_like.mean(),
+        frac_pulse=pulse.mean(),
+        frac_saturated=saturated.mean(),
+        acf1=None,
+        tex_lr_low=None,
+        tex_lr_mid=None,
+        tex_lr_high=None,
+        tex_lr_high_tail=None,
+        tex_dist=None,
+        pair_corr_noise=_mean_pair_corr(x[noise_like]),
+        pair_corr_pulse=_mean_pair_corr(x[pulse]),
+        peak_bin_std=float(x[pulse].argmax(axis=1).std()) if pulse.sum() >= 3 else None,
+    )
+    n_win = seq_len // window
+    if n_win >= 1 and noise_like.sum() >= min_rows:
+        nl = x[noise_like]
+        proj = _band_projector(window).astype(np.float64)
+        r = nl[:, : n_win * window].reshape(len(nl), n_win, window) @ proj
+        out["acf1"] = float(((r[..., 1:] * r[..., :-1]).sum(-1) / ((r * r).sum(-1) + 1e-30)).mean())
+        if ref is not None:
+            feats = _band_texture_features_np(nl[:, :, None], window)[:, :, 0, :].mean(axis=0)
+            lr = feats - np.asarray(ref, dtype=np.float64)
+            out.update(
+                tex_lr_low=lr[:, 0].mean(),
+                tex_lr_mid=lr[:, 1].mean(),
+                tex_lr_high=lr[:, 2].mean(),
+                tex_lr_high_tail=lr[-1, 2],
+                tex_dist=np.abs(lr).mean(),
+            )
+    if real_std is not None:
+        ratio = x.std(axis=0) / (np.asarray(real_std, dtype=np.float64) + 1e-8)
+        for name, idx in zip(("front", "mid", "tail"), np.array_split(np.arange(seq_len), 3), strict=True):
+            out[f"var_ratio_{name}"] = ratio[idx].mean()
+    return {k: _finite_or_none(v) for k, v in out.items()}
+
+
+def _thirds_mean(p, lengths):
+    """p [N, seq_len] per-timestep values; mean over the valid timesteps (t < length) of the first / middle / last
+    third of the window, as a dict front/mid/tail."""
+    n, seq_len = p.shape
+    valid = np.arange(seq_len)[None, :] < np.asarray(lengths)[:, None]
+    out = {}
+    for name, idx in zip(("front", "mid", "tail"), np.array_split(np.arange(seq_len), 3), strict=True):
+        m = valid[:, idx]
+        out[name] = float((p[:, idx] * m).sum() / max(m.sum(), 1))
+    return out
+
+
+def _response_positions(seq_len):
+    """Timesteps at which the generator's responsiveness to its newest input is probed (early to late)."""
+    return sorted({max(1, int(round(f * (seq_len - 1)))) for f in (0.03, 0.12, 0.25, 0.5, 0.75, 0.94)})
+
+
 def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None, texture=None):
     """Builds the full TimeGAN graph -- placeholders through the loss and
     optimizer ops -- shared by train_timegan_timed and load_timegan.
@@ -455,8 +569,11 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None, texture=
       is None, Noise is None unless parameters["inject_noise"] is set),
       X_hat, E0_solver, E_solver, D_solver, G_solver, GS_solver,
       E_loss_T0, G_loss_S, G_loss_U, G_loss_V, G_loss_T, G_loss_U_e, D_loss, D_loss_real, D_loss_fake,
-      D_loss_fake_e, and grad_norms (a dict of tensors, or None unless
-      parameters["log_grad_norms"]).
+      D_loss_fake_e, grad_norms (a dict of tensors, or None unless
+      parameters["log_grad_norms"]; per term: `name` over generator + supervisor variables, plus
+      `name_gen` and `name_sup` for each network alone), and Y_real/Y_fake/Y_fake_e (the
+      discriminator's per-timestep logits, shape [batch, seq_len, 1], on real embeddings, generated
+      embeddings and raw generator output).
     """
     hidden_dim = parameters["hidden_dim"]
     num_layers = parameters["num_layer"]
@@ -622,7 +739,7 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None, texture=
             )
         )
     else:
-        raise ValueError(f"texture_kind must be 'jitter' or 'bands', got {parameters['texture_kind']!r}")
+        raise ValueError(f"texture_kind must be 'jitter' or 'bands', got {parameters['texture_kind']!r}")  # noqa: TRY003
 
     # 5. Summation
     G_loss = (
@@ -654,10 +771,19 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None, texture=
             T=parameters["g_loss_t_weight"] * G_loss_T,
             total=G_loss,
         )
+        # Each term reports three norms from ONE backward pass: over generator + supervisor variables
+        # together (key `name`, as before), and separately over the generator's variables (`name_gen`)
+        # and the supervisor's (`name_sup`). The split matters because the two networks are stacked
+        # (generator -> supervisor -> recovery) and some terms reach only one of them: G_loss_S is
+        # computed from the supervisor run on REAL embeddings, so it never touches the generator, yet
+        # the combined norm alone would suggest it steers the generator.
+        n_gen = len(g_vars)
         grad_norms = {}
         for name, term in weighted_terms.items():
-            gs = [g for g in tf.gradients(term, update_vars) if g is not None]
-            grad_norms[name] = tf.linalg.global_norm(gs) if gs else tf.constant(0.0)
+            grads = tf.gradients(term, update_vars)
+            for key, part in ((name, grads), (name + "_gen", grads[:n_gen]), (name + "_sup", grads[n_gen:])):
+                gs = [g for g in part if g is not None]
+                grad_norms[key] = tf.linalg.global_norm(gs) if gs else tf.constant(0.0)
 
     # Embedder network loss
     E_loss_T0 = tf.compat.v1.losses.mean_squared_error(X, X_tilde)
@@ -695,6 +821,9 @@ def _build_timegan_graph(parameters, max_seq_len, dim, static_dim=None, texture=
         D_loss_fake=D_loss_fake,
         D_loss_fake_e=D_loss_fake_e,
         grad_norms=grad_norms,
+        Y_real=Y_real,
+        Y_fake=Y_fake,
+        Y_fake_e=Y_fake_e,
     )
 
 
@@ -879,7 +1008,37 @@ def train_timegan_timed(
           - log_grad_norms: default False. At each phase-3 logging step also record the norm of
               the gradient of each WEIGHTED generator loss term (U, U_e, S, V, T, and the total)
               with respect to the generator + supervisor variables -- the direct readout of each
-              term's effective weight (raw loss values do not show how hard a term pushes).
+              term's effective weight (raw loss values do not show how hard a term pushes). Each
+              term is also reported separately for the generator's variables (grad_norm_<term>_gen)
+              and the supervisor's (grad_norm_<term>_sup): the networks are stacked, and G_loss_S
+              reaches only the supervisor.
+          - log_diagnostics: default False. At each phase-3 logging step also compute and log (history
+              fields prefixed dg_, one printed "diagnostics" line, plus one dg_real_* reference record
+              with phase "diag_reference" holding the same numbers for real rows) a set of numbers
+              chosen to show, while training, the failures that aggregate losses hid in this project's
+              runs. On a FIXED-noise batch (same noise every step, so changes are the generator's) and on
+              a FRESH-noise batch (own random stream, for diversity): composition (fractions of
+              noise-like / pulse / saturated rows), texture (log ratio to real of the low / mid / high
+              band power of noise-like rows, the last-window high band, and tex_dist, the value the
+              "bands" G_loss_T takes, available even with the texture loss off), acf1 (lag-1
+              autocorrelation of the noise-like rows' detrended windows; about -0.12 for white noise, so compare
+              with the real-row reference), diversity
+              (mean pairwise correlation of noise-like and of pulse rows, spread of peak position) and
+              the per-third generated/real std ratio over the whole batch (a steadier replacement for
+              the variance_check line, which is kept). Also the discriminator's mean P(real) on real and
+              generated embeddings for the first / middle / last third of the window (dg_d_p_*), and the
+              generator's responsiveness to its newest input (dg_resp_local_p<s>: output change, in data
+              units, per one-standard-deviation nudge of Z[s]; dg_resp_persist_p<s>: the change 4 steps
+              later as a fraction of that; a central finite difference at a few early-to-late positions).
+              Costs about a dozen forward passes of a diag_n batch per logging step. Uses its own
+              RandomState streams, so it does not change the training run. Not supported with
+              ori_data_static. Related parameters: diag_n (128, batch size of each diagnostic batch),
+              diag_seed (0), diag_pulse_amp (1000.0, data units above a row's median for "pulse"),
+              diag_saturation_frac (0.95 of the scaled range, at least 3 samples, for "saturated"),
+              diag_response_n (64, rows for the responsiveness probe), diag_response_h (0.05, finite
+              difference step in Z). Noise-like uses texture_noise_amp and the bands use
+              texture_band_window, as for texture_kind="bands"; a band reference is built from the training
+              data's noise-only rows whatever texture_kind is (tex_* are None if there are too few).
           Independent of these options, phase-3 logging now also records G_loss_U_e, the
           weighted contribution of each generator loss term, the discriminator's three loss
           components (real, fake, fake-embedding), the fraction of iterations since the last
@@ -968,7 +1127,8 @@ def train_timegan_timed(
         # the data's own units (e.g. ADC counts) because that is how a person thinks about "noise-like".
         tex_window = int(parameters["texture_band_window"])
         noise_amp = np.broadcast_to(
-            np.asarray(parameters["texture_noise_amp"], dtype=np.float64) / (np.asarray(max_val, dtype=np.float64) + 1e-7),
+            np.asarray(parameters["texture_noise_amp"], dtype=np.float64)
+            / (np.asarray(max_val, dtype=np.float64) + 1e-7),
             (dim,),
         )
         texture = dict(ref=_texture_reference(ori_data, tex_window, noise_amp), noise_amp=noise_amp)
@@ -990,6 +1150,7 @@ def train_timegan_timed(
     G_loss_U_e = graph["G_loss_U_e"]
     D_loss_real, D_loss_fake, D_loss_fake_e = graph["D_loss_real"], graph["D_loss_fake"], graph["D_loss_fake_e"]
     grad_norms = graph["grad_norms"]
+    Y_real, Y_fake = graph["Y_real"], graph["Y_fake"]
 
     noise_bank = None
     if parameters["inject_noise"]:
@@ -1105,6 +1266,140 @@ def train_timegan_timed(
         if extra_saver is not None:
             extra_saver.save(sess, f"{out_filename}_ckpt_{tag}", write_state=False, write_meta_graph=False)
 
+    # Optional live diagnostics (parameters["log_diagnostics"], see the docstring). Everything here draws from
+    # its OWN RandomState objects, never numpy's global stream, so switching it on does not change the training
+    # run's batches or noise; and it only runs at phase-3 logging steps.
+    diag = None
+    if parameters.get("log_diagnostics", False):
+        if static_dim is not None:
+            print("WARNING: log_diagnostics is not supported with static features -- disabled.", flush=True)
+        else:
+            if dim > 1:
+                print("WARNING: log_diagnostics summarizes channel 0 only.", flush=True)
+            d_n = min(int(parameters.get("diag_n", 128)), no)
+            d_seed = int(parameters.get("diag_seed", 0))
+            to_scaled = 1.0 / (float(np.ravel(max_val)[0]) + 1e-7)
+            d_window = int(parameters["texture_band_window"])
+            d_noise_amp = float(np.ravel(parameters["texture_noise_amp"])[0]) * to_scaled
+            d_pulse_amp = float(parameters.get("diag_pulse_amp", 1000.0)) * to_scaled
+            d_sat = float(parameters.get("diag_saturation_frac", 0.95))
+            d_min_rows = float(parameters["texture_min_rows"])
+            if texture is not None:
+                d_ref = np.asarray(texture["ref"])[:, 0, :]
+            else:
+                try:
+                    noise_amp_all = np.broadcast_to(np.asarray(d_noise_amp), (dim,))
+                    d_ref = _texture_reference(ori_data, d_window, noise_amp_all)[:, 0, :]
+                except ValueError as err:
+                    print(
+                        f"WARNING: diagnostics: no band-texture reference ({err}); tex_* fields disabled.", flush=True
+                    )
+                    d_ref = None
+            d_real_std = np.std(ori_data[:, :, 0], axis=0)
+            rs_fixed = np.random.RandomState(d_seed)
+            fixed_idx = rs_fixed.choice(no, d_n, replace=False)
+            fixed_T = [ori_time[i] for i in fixed_idx]
+            fixed_Z = np.zeros([d_n, max_seq_len, z_dim])
+            for r_i, t_i in enumerate(fixed_T):
+                fixed_Z[r_i, :t_i] = rs_fixed.uniform(0.0, 1, [t_i, z_dim])
+            fixed_X = ori_data[fixed_idx]
+            rs_fresh = np.random.RandomState(d_seed + 1)  # advances every call: fresh noise each logging step
+            d_real_rows = np.random.RandomState(d_seed + 2).choice(no, d_n, replace=False)
+            d_h = float(parameters.get("diag_response_h", 0.05))
+            d_resp_n = min(int(parameters.get("diag_response_n", 64)), d_n)
+            d_positions = [p_ for p_ in _response_positions(max_seq_len) if p_ + 4 < max_seq_len]
+            diag = True
+
+    def _diag_kwargs():
+        return dict(
+            window=d_window,
+            ref=d_ref,
+            noise_amp=d_noise_amp,
+            pulse_amp=d_pulse_amp,
+            sat_frac=d_sat,
+            min_rows=d_min_rows,
+            real_std=d_real_std,
+        )
+
+    def _gen_chunked(Zb, Tb, Xb):
+        """Generator output (scaled units) for arbitrary-size Zb, in batch_size chunks."""
+        out = np.zeros([len(Zb), max_seq_len, dim])
+        for start in range(0, len(Zb), batch_size):
+            end = min(start + batch_size, len(Zb))
+            out[start:end] = sess.run(X_hat, feed_dict={Z: Zb[start:end], X: Xb[start:end], T: Tb[start:end]})
+        return out
+
+    def _response_fields():
+        """How much the generator's output moves when its newest input is nudged, by position: central finite
+        difference of X_hat with respect to Z[s] at s = a few early-to-late positions. resp_local_p<s> is the
+        mean absolute change of the output AT s per one-standard-deviation (0.289) nudge of Z[s], in the data's
+        units (real noise is ~4.5 counts in this project); resp_persist_p<s> is the change 4 steps later as a
+        fraction of that (near 0 = the input is forgotten at once, i.e. white; large = it lingers in the
+        recurrent state, i.e. coloured)."""
+        fields = {}
+        rs = np.random.RandomState(d_seed + 3)
+        Zr = np.zeros([d_resp_n, max_seq_len, z_dim])
+        for r_i in range(d_resp_n):
+            Zr[r_i, : fixed_T[r_i]] = rs.uniform(d_h, 1 - d_h, [fixed_T[r_i], z_dim])
+        Tr, Xr = fixed_T[:d_resp_n], fixed_X[:d_resp_n]
+        z_std = float(np.sqrt(1.0 / 12.0))
+        scale = float(np.ravel(max_val)[0])
+        for s_pos in d_positions:
+            Zp, Zm = Zr.copy(), Zr.copy()
+            Zp[:, s_pos] += d_h
+            Zm[:, s_pos] -= d_h
+            dX = (_gen_chunked(Zp, Tr, Xr) - _gen_chunked(Zm, Tr, Xr))[:, :, 0] / (2 * d_h)
+            ok = np.asarray(Tr) > s_pos + 4
+            if not ok.any():
+                continue
+            local = z_std * scale * np.abs(dX[ok, s_pos]).mean()
+            later = z_std * scale * np.abs(dX[ok, s_pos + 4]).mean()
+            fields[f"dg_resp_local_p{s_pos}"] = _finite_or_none(local)
+            fields[f"dg_resp_persist_p{s_pos}"] = _finite_or_none(later / (local + 1e-30))
+        return fields
+
+    def _diagnostic_fields(d_feed, T_mb):
+        """One logging step's worth of diagnostics: (flat dict of history fields, one printable summary line)."""
+        fields = {}
+        fixed_gen = _gen_chunked(fixed_Z, fixed_T, fixed_X)[:, :, 0]
+        fresh_T = [ori_time[i] for i in rs_fresh.choice(no, d_n, replace=False)]
+        fresh_Z = np.zeros([d_n, max_seq_len, z_dim])
+        for r_i, t_i in enumerate(fresh_T):
+            fresh_Z[r_i, :t_i] = rs_fresh.uniform(0.0, 1, [t_i, z_dim])
+        fresh_gen = _gen_chunked(fresh_Z, fresh_T, fixed_X)[:, :, 0]
+        m_fixed = _diag_metrics(fixed_gen, **_diag_kwargs())
+        m_fresh = _diag_metrics(fresh_gen, **_diag_kwargs())
+        fields.update({f"dg_fixed_{k}": v for k, v in m_fixed.items()})
+        fields.update({f"dg_fresh_{k}": v for k, v in m_fresh.items()})
+        y_real, y_fake = sess.run([Y_real, Y_fake], feed_dict=d_feed)
+        p_real = 1.0 / (1.0 + np.exp(-y_real[:, :, 0]))
+        p_fake = 1.0 / (1.0 + np.exp(-y_fake[:, :, 0]))
+        for name, vals in (("real", _thirds_mean(p_real, T_mb)), ("fake", _thirds_mean(p_fake, T_mb))):
+            fields.update({f"dg_d_p_{name}_{k}": v for k, v in vals.items()})
+        fields.update(_response_fields())
+
+        def f(v, spec=".2f"):
+            return "n/a" if v is None else format(v, spec)
+
+        loc = [fields.get(f"dg_resp_local_p{q}") for q in d_positions]
+        per = [fields.get(f"dg_resp_persist_p{q}") for q in d_positions]
+        line = (
+            f"pulse={f(m_fixed['frac_pulse'])} noise={f(m_fixed['frac_noise'])} sat={f(m_fixed['frac_saturated'])} | "
+            f"texture dist={f(m_fixed['tex_dist'])} log-ratio low/mid/high={f(m_fixed['tex_lr_low'])}/"
+            f"{f(m_fixed['tex_lr_mid'])}/{f(m_fixed['tex_lr_high'])} tail-high={f(m_fixed['tex_lr_high_tail'])} "
+            f"acf1={f(m_fixed['acf1'])} | diversity(fresh z) corr noise={f(m_fresh['pair_corr_noise'])} "
+            f"pulse={f(m_fresh['pair_corr_pulse'])} peak-bin-std={f(m_fresh['peak_bin_std'], '.1f')} | "
+            f"std ratio front/mid/tail={f(m_fresh['var_ratio_front'])}/{f(m_fresh['var_ratio_mid'])}/"
+            f"{f(m_fresh['var_ratio_tail'])} | D p(real) real f/m/t={f(fields['dg_d_p_real_front'])}/"
+            f"{f(fields['dg_d_p_real_mid'])}/{f(fields['dg_d_p_real_tail'])} fake f/m/t="
+            f"{f(fields['dg_d_p_fake_front'])}/{f(fields['dg_d_p_fake_mid'])}/{f(fields['dg_d_p_fake_tail'])} | "
+            f"gen response (counts per 1sd nudge) at {d_positions}: local "
+            + "/".join(f(v, ".1f") for v in loc)
+            + " persist4 "
+            + "/".join(f(v) for v in per)
+        )
+        return fields, line
+
     # Set up time stuff
     start_time = time_ns()  # Get the start time of the training
     max_time_ns = seconds * (10**9)  # Convert seconds to nanoseconds
@@ -1176,6 +1471,16 @@ def train_timegan_timed(
         # 3. Joint Training
         print("Start Joint Training", flush=True)
         d_checks = d_updates = 0  # discriminator-update bookkeeping, reset at each log line
+        if diag:
+            # The same summaries computed on a random sample of REAL rows: what each diagnostic reads for real
+            # data (phase label is not 3, so history readers that select phase-3 records skip it).
+            real_ref = _diag_metrics(ori_data[d_real_rows, :, 0], **_diag_kwargs())
+            print(
+                "phase 3 diagnostics reference (real rows): "
+                + " ".join(f"{k}={'n/a' if v is None else format(v, '.3g')}" for k, v in real_ref.items()),
+                flush=True,
+            )
+            log_history({"phase": "diag_reference", **{f"dg_real_{k}": v for k, v in real_ref.items()}})
 
         for itt in range(current_iter, iterations):
             # Generator training (twice more than discriminator training)
@@ -1260,7 +1565,7 @@ def train_timegan_timed(
                 if grad_norms is not None:
                     names = list(grad_norms.keys())
                     vals = sess.run([grad_norms[k] for k in names], feed_dict=d_feed)
-                    gn = {f"grad_norm_{k}": float(v) for k, v in zip(names, vals)}
+                    gn = {f"grad_norm_{k}": float(v) for k, v in zip(names, vals, strict=True)}
                     print(
                         f"phase 3 iter {itt}/{iterations} generator grad norms (weighted terms): "
                         + " ".join(f"{k[10:]}={v:.3g}" for k, v in gn.items()),
@@ -1276,6 +1581,10 @@ def train_timegan_timed(
                 # -- a stable-looking d_loss/g_loss_u is consistent with
                 # both a healthy adversarial game AND a generator that's
                 # settled for reproducing the dominant mode.
+                dg_fields = {}
+                if diag:
+                    dg_fields, dg_line = _diagnostic_fields(d_feed, T_mb)
+                    print(f"phase 3 iter {itt}/{iterations} diagnostics: {dg_line}", flush=True)
                 gen_batch = sess.run(X_hat, feed_dict={Z: Z_mb, X: X_mb, T: T_mb, **_static_extras(S_mb, Sz_mb)})
                 real_std = np.std(X_mb, axis=0)
                 gen_std = np.std(gen_batch, axis=0)
@@ -1310,6 +1619,7 @@ def train_timegan_timed(
                         "variance_ratio_min": float(ratio.min()),
                         "variance_ratio_max": float(ratio.max()),
                         **gn,
+                        **dg_fields,
                     }
                 )
 
